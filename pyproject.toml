@@ -2,15 +2,25 @@
 name = "hsc"
 version = "1.0.0"
 description = "High-speed camera spray-angle toolkit for a needle-free injector test rig"
-requires-python = ">=3.11"
-# Documented for reference; already installed on the rig machine. Do NOT pip install.
+requires-python = ">=3.13"
 dependencies = [
-    "numpy",
-    "opencv-python",
-    "scipy",
-    "scikit-learn",
-    "pillow",
+    "numpy>=2.1",
+    "opencv-python>=4.10",
+    "scipy>=1.16",
+    "scikit-learn>=1.9",
+    "pillow>=11.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pyinstaller>=6.21",
+]
+
+# The hsc/ package is run in place from the repo root (via `uv run`), never
+# built or installed into the environment.
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

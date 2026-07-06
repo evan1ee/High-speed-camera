@@ -6,10 +6,11 @@ installing Python or any packages**.
 
 ## Build
 
-One time, on the development PC:
+One time, on the development PC (installs Python 3.13 + all deps including
+PyInstaller into `.venv\`, pinned by `uv.lock`):
 
 ```
-pip install pyinstaller
+uv sync
 ```
 
 Then build (works from anywhere — the script switches to the repo root itself):
@@ -21,7 +22,7 @@ packaging\build_exe.bat
 or directly, from the repo root:
 
 ```
-python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
+uv run python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
 ```
 
 Output: **`dist\HighSpeedCamera\`** containing `HighSpeedCamera.exe` and an

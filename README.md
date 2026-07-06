@@ -17,7 +17,7 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 
 | File | Purpose |
 |------|---------|
-| `run_gui.py` | **Entry point** — launches the GUI (`python run_gui.py`); also the PyInstaller entry. |
+| `run_gui.py` | **Entry point** — launches the GUI (`uv run python run_gui.py`); also the PyInstaller entry. |
 | `hsc/capture_gui.py` | **Main app.** Tkinter GUI: live preview, instant capture, auto find-injection, auto measure. |
 | `hsc/capture_image.py` | Low-level camera capture (IMV SDK). Also a standalone CLI. |
 | `hsc/injection_extract.py` | Finds the injection event in a long burst and copies the relevant frames out. |
@@ -36,10 +36,13 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 ## Requirements
 
 - **Windows** (the camera SDK and `os.startfile` are Windows-specific).
-- **Python 3.13** with:
+- **[uv](https://docs.astral.sh/uv/)** — manages Python 3.13 and all dependencies
+  (numpy, opencv-python, scipy, scikit-learn, pillow; dev group adds pytest + PyInstaller).
+  One-time setup from the repo root:
   ```
-  pip install numpy opencv-python scipy scikit-learn pillow
+  uv sync
   ```
+  Then prefix every command with `uv run` (as shown below).
 - For **capturing**: the IMV camera connected, plus the bundled SDK in
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs in `vendor/Runtime/x64` (already in the repo).
 - For the **fast C++ scanner** (optional): MinGW `g++` on PATH. If `vendor\bin\injection_scan.exe`
@@ -50,7 +53,7 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 ## Quick start (GUI)
 
 ```bash
-python run_gui.py
+uv run python run_gui.py
 ```
 
 1. The window opens maximized and the **live preview** starts automatically.
@@ -143,7 +146,7 @@ camera), the detector locates the **outer boundary of each dark line** — the t
 not the line centre (`--mode outer`, the default; `dark`/`bright`/`step` are also available).
 The perpendicular distance between the two fitted lines is the reference length in pixels, so
 `mm_per_px = distance_mm / distance_px`. (CLI for scripting:
-`python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1 --roi2 x0 y0 x1 y1`.)
+`uv run python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1 --roi2 x0 y0 x1 y1`.)
 The scale stays valid while lens, zoom and working distance are unchanged (the aspect preset
 does not affect it — cropping changes the field of view, not the pixel size). Re-calibrate
 after any refocus/reposition.
@@ -200,18 +203,18 @@ identically.
 # Run all CLIs as modules from the repo root (the package is never pip-installed)
 
 # List cameras / capture a burst
-python -m hsc.capture_image --list
-python -m hsc.capture_image --duration 4 --aspect 320x240 --exposure-us 500
+uv run python -m hsc.capture_image --list
+uv run python -m hsc.capture_image --duration 4 --aspect 320x240 --exposure-us 500
 
 # Find the injection in a burst folder
-python -m hsc.injection_extract "data\captures\<run>" --before 30 --after 30
+uv run python -m hsc.injection_extract "data\captures\<run>" --before 30 --after 30
 
 # Measure a folder of injection frames (jet frames 10..20), or a single image
-python -m hsc.measure_angle "data\injection images\<run>" --start 10 --end 20
-python -m hsc.measure_angle frame_002780.bmp    # single image -> *_measured.png
+uv run python -m hsc.measure_angle "data\injection images\<run>" --start 10 --end 20
+uv run python -m hsc.measure_angle frame_002780.bmp    # single image -> *_measured.png
 
 # Measure an angle block from a still image
-python -m hsc.measure_block "data\measure\angle_block\block_<timestamp>.bmp"
+uv run python -m hsc.measure_block "data\measure\angle_block\block_<timestamp>.bmp"
 ```
 
 ---

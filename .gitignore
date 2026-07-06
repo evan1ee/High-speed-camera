@@ -7,6 +7,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# uv-managed virtual environment (recreate with `uv sync`)
+.venv/
+
 # Runtime data: captures, injection images, measure output, calibration and
 # reference JSON. Machine-specific, often gigabytes - never committed.
 data/

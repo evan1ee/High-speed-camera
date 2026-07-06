@@ -13,7 +13,7 @@ Capture button.
 
 ## Module map
 
-- **`hsc/capture_gui.py`** — Tkinter GUI, the entry point (`python run_gui.py`). Owns one
+- **`hsc/capture_gui.py`** — Tkinter GUI, the entry point (`uv run python run_gui.py`). Owns one
   persistent camera worker thread that does the live preview AND the burst capture on the
   *same already-open camera* (so Capture is instant). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto make slow-motion video → auto measure`.
@@ -51,7 +51,7 @@ Capture button.
   steepest-gradient flank facing *away from the other ROI* (`calibrate_from_rois` assigns the
   outward sign from the ROI geometry). `mode` "dark"/"bright"/"step" use the feature extremum. Draws both green lines + ROI boxes
   + gap connector + mm/px onto `*_scale.bmp` and writes `calibration.json` (via `data_root()`).
-  CLI for scripting/tests: `python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1
+  CLI for scripting/tests: `uv run python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1
   --roi2 x0 y0 x1 y1`. **"Auto Calibrate"** button skips the dialog: `auto_rois` finds the two
   dark lines in the left `region_frac` (default 1/3, avoiding the right-side clutter) by
   **per-column two-trough voting** (`_two_lines`; robust to a tilted or locally-faint edge that a
@@ -90,7 +90,7 @@ PyInstaller into `dist\HighSpeedCamera\` (see `docs/DISTRIBUTION.md`); run
 (`Runtime/x64`, the `Development/.../MVSDK` wrapper, `bin/injection_scan.exe`) **preserving the
 relative paths inside `vendor/`** — the vendor `IMVApi.py` loads `MVSDKmd.dll` by the relative
 path `../../../../../Runtime/x64/MVSDKmd.dll`, so that layout must be kept (in the built app it
-lands under `dist\HighSpeedCamera\_internal\vendor\...`). `python run_gui.py --selftest
+lands under `dist\HighSpeedCamera\_internal\vendor\...`). `uv run python run_gui.py --selftest
 "<injection folder>"` runs measure+video headless (writes `selftest.log`) to verify a build
 without a camera. `build/` and `dist/` are git-ignored.
 
@@ -173,9 +173,11 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## Conventions / gotchas
 
-- **Windows-only paths and APIs** (SDK, `os.startfile`). Use `python` (3.13).
-- Run module CLIs with `python -m hsc.<module>` from the repo root; the package is never
-  pip-installed.
+- **Windows-only paths and APIs** (SDK, `os.startfile`). Python 3.13, managed by **uv**:
+  `uv sync` once creates `.venv/` from `pyproject.toml` + `uv.lock` (dev group includes
+  pytest + PyInstaller); prefix commands with `uv run`.
+- Run module CLIs with `uv run python -m hsc.<module>` from the repo root; the package is never
+  pip-installed (`tool.uv.package = false` — it runs in place).
 - Capture needs the IMV SDK + camera; **measurement does not** (pure cv2/scipy/sklearn on saved
   images), so you can iterate on `hsc/injection_extract.py` / `hsc/measure_angle.py` without hardware.
 - BMP frames here are uncompressed 8-bit, often read fast via `injection_extract._bmp_info`
@@ -187,9 +189,9 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `python -m pytest` (17 tests: import smoke, synthetic wedge, calibration load,
-  vendor layout, data root). Compile check: `python -m py_compile hsc/*.py run_gui.py`.
-- Measurement: run `python -m hsc.measure_angle` on an existing `data\injection images\<run>`
+- Tests: `uv run python -m pytest` (17 tests: import smoke, synthetic wedge, calibration load,
+  vendor layout, data root). Compile check: `uv run python -m py_compile hsc/*.py run_gui.py`.
+- Measurement: run `uv run python -m hsc.measure_angle` on an existing `data\injection images\<run>`
   folder; render a
   saved frame (native 320×240 by default; raise `MEASURE_RENDER_SCALE` for a zoomable 960×720)
   and inspect that the green lines sit on the white jet edges.
@@ -201,6 +203,7 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 - **Do** keep changes minimal and preserve the iteratively-tuned defaults (`EDGE_*`, `RANSAC_*`,
   `NOZZLE_SIDE`, `MEASURE_START/END`, padding). They reflect real user feedback on this rig.
-- **Don't** commit, push, or install packages unless asked. (scikit-learn is already installed.)
+- **Don't** commit, push, or add/upgrade dependencies unless asked. (Everything needed is in
+  `pyproject.toml`/`uv.lock`; `uv sync` recreates the environment.)
 - **Don't** delete the user's `data\captures\`, `data\injection images\`, or `data\measure\`
   data, or the hand-drawn reference images, without explicit instruction.

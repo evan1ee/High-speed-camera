@@ -2,11 +2,12 @@
 REM Build the High Speed Camera GUI into a transferable Windows folder app.
 REM Output: dist\HighSpeedCamera\  (zip this folder and copy it to another PC).
 REM
-REM Requires: pip install pyinstaller  (one time).
+REM Requires: uv (https://docs.astral.sh/uv/) - run `uv sync` once to create
+REM the environment (PyInstaller is in the dev dependency group).
 
 cd /d "%~dp0.."
 
-python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
+uv run python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
     echo BUILD FAILED.
