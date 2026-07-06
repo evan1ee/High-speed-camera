@@ -21,7 +21,7 @@ packaging\build_exe.bat
 or directly, from the repo root:
 
 ```
-python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm
+python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
 ```
 
 Output: **`dist\HighSpeedCamera\`** containing `HighSpeedCamera.exe` and an
