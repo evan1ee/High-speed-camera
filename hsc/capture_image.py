@@ -10,7 +10,7 @@ from ctypes import byref, c_double, c_int64, c_void_p
 from pathlib import Path
 
 
-from app_paths import resource_root
+from hsc.app_paths import resource_root
 
 ROOT = resource_root()
 SDK_DIR = ROOT / "Development" / "Samples" / "Python" / "IMV" / "MVSDK"

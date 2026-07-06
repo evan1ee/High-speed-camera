@@ -14,16 +14,16 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image, ImageTk
 
-import calibrate_scale
-import calibrate_ui
-import capture_image
-import injection_extract
-import make_video
-import measure_angle
-import measure_block
-import reference_lines
-import reference_ui
-from app_paths import data_root
+from hsc import calibrate_scale
+from hsc import calibrate_ui
+from hsc import capture_image
+from hsc import injection_extract
+from hsc import make_video
+from hsc import measure_angle
+from hsc import measure_block
+from hsc import reference_lines
+from hsc import reference_ui
+from hsc.app_paths import data_root
 
 
 ROOT = data_root()
@@ -1334,11 +1334,18 @@ def _run_selftest(folder):
     return code
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    """GUI entry point; ``--selftest <injection folder>`` runs headless."""
     import sys
 
-    if len(sys.argv) >= 3 and sys.argv[1] == "--selftest":
-        sys.exit(_run_selftest(sys.argv[2]))
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) >= 2 and argv[0] == "--selftest":
+        return _run_selftest(argv[1])
 
     app = CaptureGui()
     app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

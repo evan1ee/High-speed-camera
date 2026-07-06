@@ -18,8 +18,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-import injection_extract
-from app_paths import data_root
+from hsc import injection_extract
+from hsc.app_paths import data_root
 
 
 REFERENCE_FILE = "reference_lines.json"

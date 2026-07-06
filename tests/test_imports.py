@@ -4,17 +4,17 @@ import importlib
 import pytest
 
 MODULES = [
-    "app_paths",
-    "calibrate_scale",
-    "calibrate_ui",
-    "capture_gui",
-    "capture_image",
-    "injection_extract",
-    "make_video",
-    "measure_angle",
-    "measure_block",
-    "reference_lines",
-    "reference_ui",
+    "hsc.app_paths",
+    "hsc.calibrate_scale",
+    "hsc.calibrate_ui",
+    "hsc.capture_gui",
+    "hsc.capture_image",
+    "hsc.injection_extract",
+    "hsc.make_video",
+    "hsc.measure_angle",
+    "hsc.measure_block",
+    "hsc.reference_lines",
+    "hsc.reference_ui",
 ]
 
 

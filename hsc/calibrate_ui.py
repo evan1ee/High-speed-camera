@@ -15,8 +15,8 @@ from tkinter import ttk
 
 from PIL import Image, ImageTk
 
-import calibrate_scale
-import measure_angle as ma
+from hsc import calibrate_scale
+from hsc import measure_angle as ma
 
 
 ROI_COLORS = ("#00e0ff", "#ff9000")   # upper, lower

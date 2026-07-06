@@ -16,8 +16,8 @@ from tkinter import ttk
 
 from PIL import Image, ImageTk
 
-import calibrate_scale
-import reference_lines as rl
+from hsc import calibrate_scale
+from hsc import reference_lines as rl
 
 
 RED = "#ff0000"            # tip edge

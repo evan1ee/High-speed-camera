@@ -36,8 +36,8 @@ import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
-import measure_angle as ma
-from app_paths import data_root
+from hsc import measure_angle as ma
+from hsc.app_paths import data_root
 
 
 CALIBRATION_FILE = "calibration.json"

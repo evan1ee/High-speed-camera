@@ -32,8 +32,8 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 
-import injection_extract
-import reference_lines
+from hsc import injection_extract
+from hsc import reference_lines
 
 
 # ---- Pipeline parameters -------------------------------------------------

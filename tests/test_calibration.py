@@ -2,7 +2,7 @@
 
 
 def test_load_calibration_found():
-    import calibrate_scale
+    from hsc import calibrate_scale
 
     cal = calibrate_scale.load_calibration()
     assert cal is not None

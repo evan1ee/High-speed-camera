@@ -16,7 +16,7 @@ from pathlib import Path
 
 import cv2
 
-import injection_extract
+from hsc import injection_extract
 
 
 VIDEO_FPS = 15            # playback frame rate -> lower = slower motion

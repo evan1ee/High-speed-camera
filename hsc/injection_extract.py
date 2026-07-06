@@ -59,7 +59,7 @@ END_RESIDUAL_K = 1.8    # jet ends when presence settles to this x the trough fl
 END_SMOOTH_WIN = 21     # moving-average window for the presence signal
 END_HOLD = 25           # frames presence must stay low to confirm the jet ended
 END_MIN_GAP = 8         # don't look for the end right at the peak
-from app_paths import resource_root
+from hsc.app_paths import resource_root
 
 HERE = resource_root()
 CPP_EXE = HERE / ("injection_scan.exe" if os.name == "nt" else "injection_scan")

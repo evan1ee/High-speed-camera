@@ -27,11 +27,11 @@ def resource_root() -> Path:
     """Base folder for bundled read-only resources (SDK, Runtime DLLs, helper exe)."""
     if is_frozen():
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parents[1]
 
 
 def data_root() -> Path:
     """Base folder for user output written at runtime (next to the .exe when frozen)."""
     if is_frozen():
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parents[1]

@@ -24,7 +24,7 @@ def make_wedge(width=320, height=240, half_angle_deg=5.0):
 
 
 def test_measure_frame_synthetic_wedge():
-    import measure_angle
+    from hsc import measure_angle
 
     result = measure_angle.measure_frame(make_wedge())
     assert result is not None

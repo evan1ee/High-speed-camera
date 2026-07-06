@@ -27,8 +27,8 @@ import cv2
 import numpy as np
 from scipy.signal import savgol_filter
 
-import injection_extract
-import measure_angle as ma
+from hsc import injection_extract
+from hsc import measure_angle as ma
 
 
 DEST_FOLDER_NAME = "measure"
