@@ -5,9 +5,8 @@ dist/
 # Python caches
 __pycache__/
 *.pyc
+.pytest_cache/
 
-# Local data and output directories
-captures/
-injection images/
-injection\ images/
-measure/
+# Runtime data: captures, injection images, measure output, calibration and
+# reference JSON. Machine-specific, often gigabytes - never committed.
+data/

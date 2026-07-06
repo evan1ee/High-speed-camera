@@ -37,7 +37,11 @@ def resource_root() -> Path:
 
 
 def data_root() -> Path:
-    """Base folder for user output written at runtime (next to the .exe when frozen)."""
+    """Base folder for user output written at runtime (``captures``,
+    ``injection images``, ``measure``, calibration/reference JSON). Next to the
+    .exe when frozen; ``<root>/data`` from source (created on demand)."""
     if is_frozen():
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1] / "data"
+    root.mkdir(exist_ok=True)
+    return root
