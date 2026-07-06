@@ -8,7 +8,7 @@ The whole flow runs from a single **Capture** click in the GUI:
 
 ```
 Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
- captures\…           injection images\…    measure\…
+ data\captures\…      data\injection images\…   data\measure\…
 ```
 
 ---
@@ -17,17 +17,19 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 
 | File | Purpose |
 |------|---------|
-| `capture_gui.py` | **Main app.** Tkinter GUI: live preview, instant capture, auto find-injection, auto measure. |
-| `capture_image.py` | Low-level camera capture (IMV SDK). Also a standalone CLI. |
-| `injection_extract.py` | Finds the injection event in a long burst and copies the relevant frames out. |
-| `injection_scan.cpp` / `injection_scan.exe` | Fast C++/OpenMP motion scanner used by `injection_extract` (optional; Python fallback exists). |
-| `build_injection_scan.bat` | Rebuilds `injection_scan.exe` (MinGW g++). |
-| `measure_angle.py` | Spray-angle measurement pipeline (Otsu → edges → RANSAC → angle). Also a CLI. |
-| `measure_block.py` | Measures the angle of a reference **angle block** from a single still (same edge/RANSAC core). Also a CLI. |
-| `Development/`, `Runtime/` | The camera vendor's IMV SDK (Python wrapper) and runtime DLLs. |
-| `captures/` | Raw burst output (one timestamped folder per run). |
-| `injection images/` | Extracted injection windows (one folder per run). |
-| `measure/` | Annotated angle-measurement images + `angles.csv`. |
+| `run_gui.py` | **Entry point** — launches the GUI (`python run_gui.py`); also the PyInstaller entry. |
+| `hsc/capture_gui.py` | **Main app.** Tkinter GUI: live preview, instant capture, auto find-injection, auto measure. |
+| `hsc/capture_image.py` | Low-level camera capture (IMV SDK). Also a standalone CLI. |
+| `hsc/injection_extract.py` | Finds the injection event in a long burst and copies the relevant frames out. |
+| `native/injection_scan.cpp` / `vendor/bin/injection_scan.exe` | Fast C++/OpenMP motion scanner used by `injection_extract` (optional; Python fallback exists). |
+| `native/build_injection_scan.bat` | Rebuilds `injection_scan.exe` into `vendor\bin\` (MinGW g++). |
+| `hsc/measure_angle.py` | Spray-angle measurement pipeline (Otsu → edges → RANSAC → angle). Also a CLI. |
+| `hsc/measure_block.py` | Measures the angle of a reference **angle block** from a single still (same edge/RANSAC core). Also a CLI. |
+| `vendor/Development/`, `vendor/Runtime/` | The camera vendor's IMV SDK (Python wrapper) and runtime DLLs. |
+| `packaging/` | PyInstaller spec + `build_exe.bat` for the standalone Windows app. |
+| `data\captures\` | Raw burst output (one timestamped folder per run). |
+| `data\injection images\` | Extracted injection windows (one folder per run). |
+| `data\measure\` | Annotated angle-measurement images + `angles.csv`. |
 
 ---
 
@@ -39,8 +41,8 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
   pip install numpy opencv-python scipy scikit-learn pillow
   ```
 - For **capturing**: the IMV camera connected, plus the bundled SDK in
-  `Development/Samples/Python/IMV/MVSDK` and DLLs in `Runtime/x64` (already in the repo).
-- For the **fast C++ scanner** (optional): MinGW `g++` on PATH. If `injection_scan.exe`
+  `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs in `vendor/Runtime/x64` (already in the repo).
+- For the **fast C++ scanner** (optional): MinGW `g++` on PATH. If `vendor\bin\injection_scan.exe`
   is missing, the Python fallback is used automatically.
 
 ---
@@ -48,7 +50,7 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 ## Quick start (GUI)
 
 ```bash
-python capture_gui.py
+python run_gui.py
 ```
 
 1. The window opens maximized and the **live preview** starts automatically.
@@ -58,7 +60,7 @@ python capture_gui.py
    - **Measure from / to (Nth)** `10 / 20` (which jet frames to measure — see below).
 3. Click **Capture**, then fire the injector. When capture finishes it **auto-detects the
    injection** and **auto-measures** the spray angle.
-4. Results land in `injection images\<run>\` and `measure\<run>\`. Use **Open Last Folder**.
+4. Results land in `data\injection images\<run>\` and `data\measure\<run>\`. Use **Open Last Folder**.
 
 Buttons: **Stop Preview**, **Capture**, **Stop** (abort), **Find Injection** (re-run on any
 folder), **Measure** (pick a folder to measure), **Open Last Folder**.
@@ -67,20 +69,20 @@ folder), **Measure** (pick a folder to measure), **Open Last Folder**.
 
 ## How it works
 
-### 1. Capture (`capture_image.py`)
+### 1. Capture (`hsc/capture_image.py`)
 Free-run burst at the camera's max FPS. With **defer save** the frames are cloned in RAM
 during the burst and written afterward, avoiding dropped frames at ~1000 FPS. Each run is
-saved to `captures\<timestamp>_<aspect>\` as `frame_000001.bmp …`.
+saved to `data\captures\<timestamp>_<aspect>\` as `frame_000001.bmp …`.
 
-### 2. Find injection (`injection_extract.py`)
+### 2. Find injection (`hsc/injection_extract.py`)
 A burst has thousands of frames but only a short injection. The tool computes a per-frame
 **temporal motion signal** (pixels changed vs. the previous frame), finds the sharp **onset**,
 and the **end** via a jet-presence signal (so a steady jet isn't cut early). It then copies
-`[onset − before … end + after]` into `injection images\<run>\`.
+`[onset − before … end + after]` into `data\injection images\<run>\`.
 Motion signal back-ends, fastest first: **C++/OpenMP exe → NumPy raw-BMP → PIL** (all
 identical). After a capture this runs **in memory** (no disk re-read).
 
-### 3. Measure spray angle (`measure_angle.py`)
+### 3. Measure spray angle (`hsc/measure_angle.py`)
 Canonical high-speed-imaging pipeline:
 
 ```
@@ -100,13 +102,13 @@ RANSAC line fitting → spray-angle = |atan(k_upper) − atan(k_lower)|
 (pre-injection padding is skipped), so the default `10–20` measures the steady jet and skips
 the violent initial burst.
 
-### 4. Measure an angle block (`measure_block.py`)
+### 4. Measure an angle block (`hsc/measure_block.py`)
 The **Measure Angle Block** button captures a single still of a reference block placed under
 the camera and measures the angle between its two straight edges — a calibration/validation of
 the same edge-finding used for the jet. Result images and `block_angles.csv` go to
-`measure\angle_block\`.
+`data\measure\angle_block\`.
 
-### 4b. Spatial calibration — real size per pixel (`calibrate_scale.py`)
+### 4b. Spatial calibration — real size per pixel (`hsc/calibrate_scale.py`)
 
 To know actual dimensions (mm) from the image, calibrate against a reference block whose
 **two edges are a known distance apart** (e.g. 10 mm), placed at the **same working
@@ -114,7 +116,7 @@ distance as the jet**. Calibration uses an **ROI (region-of-interest) workflow**
 each edge and the software finds it to sub-pixel precision (robust against reflections and
 the nozzle in the background):
 
-**Auto (one click):** click **Auto Calibrate** — the GUI grabs a still (saved to `measure\block\`),
+**Auto (one click):** click **Auto Calibrate** — the GUI grabs a still (saved to `data\measure\block\`),
 auto-detects the two dark lines in the **left third** of the image (which avoids the nozzle /
 reflection clutter on the right), fits the two green lines, saves the calibration, and opens the
 annotated check image. Just confirm the green lines land on the outer edge of each dark line.
@@ -141,7 +143,7 @@ camera), the detector locates the **outer boundary of each dark line** — the t
 not the line centre (`--mode outer`, the default; `dark`/`bright`/`step` are also available).
 The perpendicular distance between the two fitted lines is the reference length in pixels, so
 `mm_per_px = distance_mm / distance_px`. (CLI for scripting:
-`python calibrate_scale.py still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1 --roi2 x0 y0 x1 y1`.)
+`python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1 --roi2 x0 y0 x1 y1`.)
 The scale stays valid while lens, zoom and working distance are unchanged (the aspect preset
 does not affect it — cropping changes the field of view, not the pixel size). Re-calibrate
 after any refocus/reposition.
@@ -174,7 +176,7 @@ component), find its two edges by the **steepest intensity gradient on the raw i
 each edge with **RANSAC**, and report `angle = |atan(k_upper) − atan(k_lower)|`. The
 differences are only in how the object is isolated and the geometry assumed:
 
-| Aspect | Water jet (`measure_angle.py`) | Angle block (`measure_block.py`) |
+| Aspect | Water jet (`hsc/measure_angle.py`) | Angle block (`hsc/measure_block.py`) |
 |--------|--------------------------------|----------------------------------|
 | Input | A **sequence** of frames; picks jet frames `start..end` (default 10–20) | A **single still** image |
 | Background | Subtracts a **temporal-median background** to isolate the moving jet and remove the static nozzle | **None** — Otsu runs directly on the blurred raw image |
@@ -195,26 +197,28 @@ identically.
 ## Command line
 
 ```bash
+# Run all CLIs as modules from the repo root (the package is never pip-installed)
+
 # List cameras / capture a burst
-python capture_image.py --list
-python capture_image.py --duration 4 --aspect 320x240 --exposure-us 500
+python -m hsc.capture_image --list
+python -m hsc.capture_image --duration 4 --aspect 320x240 --exposure-us 500
 
 # Find the injection in a burst folder
-python injection_extract.py "captures\<run>" --before 30 --after 30
+python -m hsc.injection_extract "data\captures\<run>" --before 30 --after 30
 
 # Measure a folder of injection frames (jet frames 10..20), or a single image
-python measure_angle.py "injection images\<run>" --start 10 --end 20
-python measure_angle.py frame_002780.bmp        # single image -> *_measured.png
+python -m hsc.measure_angle "data\injection images\<run>" --start 10 --end 20
+python -m hsc.measure_angle frame_002780.bmp    # single image -> *_measured.png
 
 # Measure an angle block from a still image
-python measure_block.py measure\angle_block\block_<timestamp>.bmp
+python -m hsc.measure_block "data\measure\angle_block\block_<timestamp>.bmp"
 ```
 
 ---
 
 ## Tuning knobs
 
-`measure_angle.py`:
+`hsc/measure_angle.py`:
 - `NOZZLE_SIDE` — `+1` nozzle on the right (default), `-1` on the left.
 - `NOZZLE_SKIP` / `ROI_FRAC` — exclude the nozzle origin and the far breakup region.
 - `RANSAC_RESIDUAL` — inlier tolerance (px) for the line fit.
@@ -222,4 +226,4 @@ python measure_block.py measure\angle_block\block_<timestamp>.bmp
 - `MEASURE_START` / `MEASURE_END` — default jet-frame range.
 - `SUPERSAMPLE`, `LINE_COLOR`, `APEX_GAP` — render scale, line color, nozzle gap.
 
-`injection_extract.py`: `DIFF_THRESH`, `END_RESIDUAL_K`, `DOWNSAMPLE`, before/after padding.
+`hsc/injection_extract.py`: `DIFF_THRESH`, `END_RESIDUAL_K`, `DOWNSAMPLE`, before/after padding.

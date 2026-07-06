@@ -13,7 +13,7 @@ Capture button.
 
 ## Module map
 
-- **`capture_gui.py`** — Tkinter GUI, the entry point (`python capture_gui.py`). Owns one
+- **`hsc/capture_gui.py`** — Tkinter GUI, the entry point (`python run_gui.py`). Owns one
   persistent camera worker thread that does the live preview AND the burst capture on the
   *same already-open camera* (so Capture is instant). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto make slow-motion video → auto measure`.
@@ -21,26 +21,27 @@ Capture button.
   `output_queue` / `preview_queue` drained by `after()` callbacks. Buttons: Stop Preview,
   Capture, Stop, Find Injection, Measure, Measure Angle Block, Make Video, Calibrate Scale,
   Auto Calibrate, Measure Block, Set Reference, Open Last Folder.
-- **`capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
+- **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
-  `Development/Samples/Python/IMV/MVSDK` and DLLs from `Runtime/x64`.
-- **`injection_extract.py`** — temporal-motion detection of the injection. `extract_injection`
+  `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
+- **`hsc/injection_extract.py`** — temporal-motion detection of the injection. `extract_injection`
   (disk) and `build_result` + `detect_bounds_with_presence` (used by the GUI's in-memory path).
   Motion-signal back-ends: `scan_with_cpp` → `compute_motion_signal_raw` → `compute_motion_signal`
   (PIL). Onset from temporal diff; end from a jet-presence signal (downsampled).
-- **`injection_scan.cpp` / `.exe`** — C++/OpenMP scanner that returns the temporal motion signal
-  as int32 stdout. Built statically via `build_injection_scan.bat` (MinGW g++). Optional:
+- **`native/injection_scan.cpp` / `vendor/bin/injection_scan.exe`** — C++/OpenMP scanner that
+  returns the temporal motion signal as int32 stdout. Built statically via
+  `native/build_injection_scan.bat` (MinGW g++; outputs to `vendor\bin\`). Optional:
   Python falls back if absent.
-- **`measure_angle.py`** — spray-angle pipeline (see below). `measure_folder` (GUI/CLI),
+- **`hsc/measure_angle.py`** — spray-angle pipeline (see below). `measure_folder` (GUI/CLI),
   `measure_single` (one image), `measure_frame` (one frame), plus modular steps.
-- **`make_video.py`** — builds a **slow-motion** playback video from an injection-images folder
+- **`hsc/make_video.py`** — builds a **slow-motion** playback video from an injection-images folder
   (`make_video`; GUI "Make Video" button + CLI). Writes `slowmo.mp4` (mp4v, fallback MJPG
   `.avi`) as a single file *directly inside the selected folder* at a low playback fps
   (`VIDEO_FPS`, default 15 → slow motion). Pure OpenCV, no SDK/camera needed.
-- **`calibrate_scale.py` / `calibrate_ui.py`** — spatial calibration (mm per pixel) from **two
+- **`hsc/calibrate_scale.py` / `hsc/calibrate_ui.py`** — spatial calibration (mm per pixel) from **two
   reference edges a known distance apart** via an **ROI workflow** (whole-frame auto-detect is
   unreliable against the nozzle/reflection clutter, so the user boxes each edge). GUI "Calibrate
-  Scale" grabs a still to `measure\block\` (uses the "Cal. distance (mm)" field) and opens
+  Scale" grabs a still to `data\measure\block\` (uses the "Cal. distance (mm)" field) and opens
   `calibrate_ui.CalibrationDialog`: the user drags an ROI around each edge, clicks *Detect Edge*.
   `detect_edge_in_roi` scans each ROI (orientation from ROI aspect), finds the sub-pixel edge per
   scan line, fits a line by RANSAC→TLS (reusing `measure_angle` helpers), and `_line_gap` takes
@@ -50,7 +51,7 @@ Capture button.
   steepest-gradient flank facing *away from the other ROI* (`calibrate_from_rois` assigns the
   outward sign from the ROI geometry). `mode` "dark"/"bright"/"step" use the feature extremum. Draws both green lines + ROI boxes
   + gap connector + mm/px onto `*_scale.bmp` and writes `calibration.json` (via `data_root()`).
-  CLI for scripting/tests: `python calibrate_scale.py still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1
+  CLI for scripting/tests: `python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1
   --roi2 x0 y0 x1 y1`. **"Auto Calibrate"** button skips the dialog: `auto_rois` finds the two
   dark lines in the left `region_frac` (default 1/3, avoiding the right-side clutter) by
   **per-column two-trough voting** (`_two_lines`; robust to a tilted or locally-faint edge that a
@@ -61,9 +62,9 @@ Capture button.
   **without** overwriting `calibration.json` (writes a `*_measured.bmp`). `load_calibration()` is
   the read API. NB: Auto Calibrate always *saves* a new calibration (assuming the entered
   distance); Measure Block only *reads* it — calibrate on the known reference, then measure others.
-- **`reference_lines.py` / `reference_ui.py`** — nozzle **reference lines**: the **tip edge**
+- **`hsc/reference_lines.py` / `hsc/reference_ui.py`** — nozzle **reference lines**: the **tip edge**
   (red) and the **centerline** (blue, through the tip midpoint, perpendicular, across the frame =
-  spray axis). GUI "Set Reference" **captures a nozzle still** (to `measure\reference\`, no jet in
+  spray axis). GUI "Set Reference" **captures a nozzle still** (to `data\measure\reference\`, no jet in
   view) and opens `reference_ui.ReferenceDialog`: the user **drags along the nozzle tip edge to
   draw the thin red line directly** (auto-detect is unreliable on the reflective nozzle, so the
   user places it) and the blue centerline is built live by `build_reference`. `save_check_image`
@@ -74,32 +75,41 @@ Capture button.
   stored in `reference_lines.json` (`data_root()`) and overlaid on every measured frame by
   `measure_folder` when the frame size matches. (`detect_tip_in_roi` /
   `set_reference_from_image/_folder` = auto-detect helpers, kept for CLI.) `NOZZLE_SIDE` = right.
-- **`app_paths.py`** — `resource_root()` (bundled read-only files: SDK, `Runtime` DLLs,
-  `injection_scan.exe`) and `data_root()` (user output: captures/injection images/measure).
-  Both return this dir from source; when frozen (PyInstaller) they split to `sys._MEIPASS` vs the
-  .exe folder. Used by `capture_image` (SDK/Runtime), `injection_extract` (scan exe), `capture_gui`.
+- **`hsc/app_paths.py`** — `resource_root()` (bundled read-only files: SDK, `Runtime` DLLs,
+  `bin/injection_scan.exe`) returns `vendor/`: `<root>/vendor` from source,
+  `<sys._MEIPASS>/vendor` when frozen (PyInstaller). `data_root()` (user output:
+  captures/injection images/measure, calibration/reference JSON) returns `<root>/data` from
+  source (created on demand), the .exe folder when frozen. Used by `capture_image`
+  (SDK/Runtime), `injection_extract` (scan exe), `capture_gui`.
 
 ## Packaging (Windows .exe)
 
-`HighSpeedCamera.spec` + `build_exe.bat` build a one-folder app via PyInstaller into
-`dist\HighSpeedCamera\` (see `DISTRIBUTION.md`). The spec bundles `Runtime/x64` and the
-`Development/.../MVSDK` wrapper **preserving their relative paths** — the vendor `IMVApi.py`
-loads `MVSDKmd.dll` by the relative path `../../../../../Runtime/x64/MVSDKmd.dll`, so that layout
-must be kept. `capture_gui.py --selftest "<injection folder>"` runs measure+video headless
-(writes `selftest.log`) to verify a build without a camera. `build/` and `dist/` are git-ignored.
+`packaging/HighSpeedCamera.spec` + `packaging/build_exe.bat` build a one-folder app via
+PyInstaller into `dist\HighSpeedCamera\` (see `docs/DISTRIBUTION.md`); run
+`packaging\build_exe.bat` from anywhere (it cds itself). The spec bundles the `vendor/` tree
+(`Runtime/x64`, the `Development/.../MVSDK` wrapper, `bin/injection_scan.exe`) **preserving the
+relative paths inside `vendor/`** — the vendor `IMVApi.py` loads `MVSDKmd.dll` by the relative
+path `../../../../../Runtime/x64/MVSDKmd.dll`, so that layout must be kept (in the built app it
+lands under `dist\HighSpeedCamera\_internal\vendor\...`). `python run_gui.py --selftest
+"<injection folder>"` runs measure+video headless (writes `selftest.log`) to verify a build
+without a camera. `build/` and `dist/` are git-ignored.
 
 ## Data flow & folders
 
-- `captures\<timestamp>_<aspect>\frame_000001.bmp …` — raw burst (one folder per run).
-- `injection images\<run>\…` — extracted injection window (`copy_start … copy_end`); the
+All user output lives under `data\` (gitignored), via `data_root()`:
+
+- `data\captures\<timestamp>_<aspect>\frame_000001.bmp …` — raw burst (one folder per run).
+- `data\injection images\<run>\…` — extracted injection window (`copy_start … copy_end`); the
   "Make Video" button also writes `slowmo.mp4` here.
-- `measure\<run>\…` + `angles.csv` — annotated angle images and report.
+- `data\measure\<run>\…` + `angles.csv` — annotated angle images and report.
+- `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
+  nozzle reference.
 
 `make_dest_dir` adds an `_HHMMSS` suffix if a destination folder already exists, so re-runs
-don't overwrite. The `captures/` contents change between sessions (the user captures/cleans);
-don't assume a specific run folder exists — glob for it.
+don't overwrite. The `data\captures\` contents change between sessions (the user
+captures/cleans); don't assume a specific run folder exists — glob for it.
 
-## measure_angle.py pipeline (canonical)
+## hsc/measure_angle.py pipeline (canonical)
 
 `Gaussian blur → Otsu → largest connected component → column-wise gradient edge extraction
 (subpixel) → Savitzky–Golay → ROI → RANSAC outlier rejection → Total Least Squares fit →
@@ -164,19 +174,23 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 ## Conventions / gotchas
 
 - **Windows-only paths and APIs** (SDK, `os.startfile`). Use `python` (3.13).
+- Run module CLIs with `python -m hsc.<module>` from the repo root; the package is never
+  pip-installed.
 - Capture needs the IMV SDK + camera; **measurement does not** (pure cv2/scipy/sklearn on saved
-  images), so you can iterate on `injection_extract.py` / `measure_angle.py` without hardware.
+  images), so you can iterate on `hsc/injection_extract.py` / `hsc/measure_angle.py` without hardware.
 - BMP frames here are uncompressed 8-bit, often read fast via `injection_extract._bmp_info`
   (header parse) + `np.fromfile` instead of PIL/cv2 decode.
 - All three motion back-ends must produce the **same** signal — verify equality if you touch them.
 - Don't break the GUI contracts: `measure_folder(source, dest_base, start, end, progress)` and
   `injection_extract.detect_bounds_with_presence(...)` / `build_result(...)` are called by
-  `capture_gui.py`.
+  `hsc/capture_gui.py`.
 
 ## How to verify changes
 
-- Compile: `python -m py_compile capture_gui.py capture_image.py injection_extract.py measure_angle.py`.
-- Measurement: run `measure_angle.py` on an existing `injection images\<run>` folder; render a
+- Tests: `python -m pytest` (17 tests: import smoke, synthetic wedge, calibration load,
+  vendor layout, data root). Compile check: `python -m py_compile hsc/*.py run_gui.py`.
+- Measurement: run `python -m hsc.measure_angle` on an existing `data\injection images\<run>`
+  folder; render a
   saved frame (native 320×240 by default; raise `MEASURE_RENDER_SCALE` for a zoomable 960×720)
   and inspect that the green lines sit on the white jet edges.
   Reading an annotated `.bmp` requires converting to PNG first to view it.
@@ -188,5 +202,5 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 - **Do** keep changes minimal and preserve the iteratively-tuned defaults (`EDGE_*`, `RANSAC_*`,
   `NOZZLE_SIDE`, `MEASURE_START/END`, padding). They reflect real user feedback on this rig.
 - **Don't** commit, push, or install packages unless asked. (scikit-learn is already installed.)
-- **Don't** delete the user's `captures/`, `injection images/`, or `measure/` data, or the
-  hand-drawn reference images, without explicit instruction.
+- **Don't** delete the user's `data\captures\`, `data\injection images\`, or `data\measure\`
+  data, or the hand-drawn reference images, without explicit instruction.

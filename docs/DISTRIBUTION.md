@@ -12,21 +12,22 @@ One time, on the development PC:
 pip install pyinstaller
 ```
 
-Then build (run from this folder):
+Then build (works from anywhere — the script switches to the repo root itself):
 
 ```
-build_exe.bat
+packaging\build_exe.bat
 ```
 
-or directly:
+or directly, from the repo root:
 
 ```
-pyinstaller HighSpeedCamera.spec --noconfirm
+python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm
 ```
 
 Output: **`dist\HighSpeedCamera\`** containing `HighSpeedCamera.exe` and an
-`_internal\` folder (Python runtime, OpenCV/SciPy/scikit-learn, the camera SDK
-wrapper, the `Runtime\x64` camera DLLs, and `injection_scan.exe`). ~480 MB
+`_internal\` folder (Python runtime, OpenCV/SciPy/scikit-learn, and the bundled
+`vendor\` tree — camera SDK wrapper, `Runtime\x64` camera DLLs, and
+`bin\injection_scan.exe` — under `_internal\vendor\...`). ~480 MB
 uncompressed, ~150–200 MB zipped.
 
 ## Transfer
@@ -37,7 +38,9 @@ uncompressed, ~150–200 MB zipped.
 3. Run `HighSpeedCamera.exe`.
 
 Captures, `injection images`, and `measure` output are written **next to the
-.exe**, so keep it in a folder the user can write to (not `C:\Program Files`).
+.exe** (unchanged from earlier builds — already-deployed rigs keep their data
+where it is), so keep it in a folder the user can write to (not
+`C:\Program Files`).
 
 ## What the target PC needs
 
@@ -60,6 +63,6 @@ HighSpeedCamera.exe --selftest "D:\path\to\injection images\<run>"
 ## Rebuilding notes
 
 - Close the app before rebuilding (a running exe locks `dist\`).
-- The console window is hidden (`console=False` in `HighSpeedCamera.spec`). Set
+- The console window is hidden (`console=False` in `packaging\HighSpeedCamera.spec`). Set
   it to `True` and rebuild if you want a debug console with stdout tracebacks.
 - `build\` and `dist\` are git-ignored (regenerable).
