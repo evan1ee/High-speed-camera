@@ -1,0 +1,16 @@
+[project]
+name = "hsc"
+version = "1.0.0"
+description = "High-speed camera spray-angle toolkit for a needle-free injector test rig"
+requires-python = ">=3.11"
+# Documented for reference; already installed on the rig machine. Do NOT pip install.
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "scipy",
+    "scikit-learn",
+    "pillow",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
