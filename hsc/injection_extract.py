@@ -62,7 +62,7 @@ END_MIN_GAP = 8         # don't look for the end right at the peak
 from hsc.app_paths import resource_root
 
 HERE = resource_root()
-CPP_EXE = HERE / ("injection_scan.exe" if os.name == "nt" else "injection_scan")
+CPP_EXE = HERE / "bin" / ("injection_scan.exe" if os.name == "nt" else "injection_scan")
 
 
 def list_frames(source_dir):

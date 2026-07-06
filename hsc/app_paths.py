@@ -5,9 +5,10 @@
 
 Two distinct roots are needed:
 
-- **resource_root()** -- where the *bundled, read-only* files live: the camera
-  SDK Python wrapper (``Development/.../MVSDK``), the ``Runtime`` DLL folder and
-  ``injection_scan.exe``. When frozen these are unpacked into ``sys._MEIPASS``.
+- **resource_root()** -- where the *bundled, read-only* files live under
+  ``vendor/``: the camera SDK Python wrapper (``Development/.../MVSDK``), the
+  ``Runtime`` DLL folder and ``bin/injection_scan.exe``. When frozen these are
+  unpacked into ``sys._MEIPASS/vendor``.
 - **data_root()** -- where the app *writes* user output (``captures``,
   ``injection images``, ``measure``). When frozen this is the folder that holds
   the .exe, so results land next to the app the user can see, not in a temp dir.
@@ -24,10 +25,15 @@ def is_frozen() -> bool:
 
 
 def resource_root() -> Path:
-    """Base folder for bundled read-only resources (SDK, Runtime DLLs, helper exe)."""
+    """Folder containing the bundled read-only resources: ``Development/`` (SDK
+    wrapper), ``Runtime/`` (DLLs) and ``bin/`` (helper exe). ``<root>/vendor``
+    from source; ``<_MEIPASS>/vendor`` when frozen (the spec bundles with a
+    matching ``vendor/`` prefix)."""
     if is_frozen():
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-    return Path(__file__).resolve().parents[1]
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    else:
+        base = Path(__file__).resolve().parents[1]
+    return base / "vendor"
 
 
 def data_root() -> Path:

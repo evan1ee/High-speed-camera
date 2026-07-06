@@ -1,1 +1,0 @@
-该示例基于VisionPro9.0，程序目标框架为.NET Framework 4。若安装的是VisionPro9.5及以上版本，需要将程序目标框架改为.NET Framework 4.7.2及以上。
