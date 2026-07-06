@@ -54,6 +54,9 @@ static bool read_header(const std::string& path, BmpInfo& info) {
     std::memcpy(&info.width, h + 18, 4);
     std::memcpy(&info.height, h + 22, 4);
     std::memcpy(&info.bpp, h + 28, 2);
+    // Reject degenerate geometry (a negative/zero width or zero height would
+    // make npix bogus). Negative height is legal (top-down), so only reject 0.
+    if (info.width <= 0 || info.height == 0) return false;
     return true;
 }
 
@@ -104,6 +107,16 @@ int main(int argc, char** argv) {
     }
     const size_t npix =
         static_cast<size_t>(info.width) * static_cast<size_t>(std::abs(info.height));
+
+    // Sanity-check npix against the actual file size: an 8-bit BMP stores ~npix
+    // pixel bytes, so npix far larger than the file means a corrupt header.
+    std::error_code sz_ec;
+    const auto fsize = fs::file_size(files[0], sz_ec);
+    if (sz_ec || npix > 2 * static_cast<size_t>(fsize)) {
+        std::fprintf(stderr, "implausible BMP dimensions (npix=%zu, file=%zu)\n",
+                     npix, static_cast<size_t>(fsize));
+        return 4;
+    }
 
     const int n = static_cast<int>(files.size());
     std::vector<int32_t> signal(n, 0);

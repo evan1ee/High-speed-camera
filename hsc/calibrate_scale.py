@@ -29,6 +29,8 @@ affect it -- cropping changes the field of view, not the pixel size).
 
 import argparse
 import json
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -235,6 +237,23 @@ def annotate(gray, result, scale=3, text_lines=None):
     return img
 
 
+def _atomic_write_json(path, record):
+    """Write *record* as JSON to *path*, backing up any existing file first.
+
+    Keeps a ``<name>.bak`` copy of the previous version and writes via a temp
+    file + ``os.replace`` so a crash mid-write can't leave a truncated file.
+    """
+    path = Path(path)
+    if path.exists():
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        except OSError:
+            pass
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def save_calibration(result, image_path, save_json=True):
     """Write the annotated check image and (optionally) calibration.json."""
     image_path = Path(image_path)
@@ -257,7 +276,7 @@ def save_calibration(result, image_path, save_json=True):
     }
     if save_json:
         cal_path = data_root() / CALIBRATION_FILE
-        cal_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        _atomic_write_json(cal_path, record)
         record["calibration_file"] = str(cal_path)
     return record
 

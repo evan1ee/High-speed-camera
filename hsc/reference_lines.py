@@ -13,6 +13,8 @@ Coordinates are image pixels at native resolution; drawing scales them.
 """
 
 import json
+import os
+import shutil
 from pathlib import Path
 
 import cv2
@@ -249,7 +251,16 @@ def save_check_image(gray, ref, out_path):
 
 def save_reference(ref):
     path = data_root() / REFERENCE_FILE
-    path.write_text(json.dumps(ref, indent=2), encoding="utf-8")
+    # Back up any existing reference to <name>.bak, then write atomically so a
+    # crash mid-write can't strand the rig with a truncated reference file.
+    if path.exists():
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        except OSError:
+            pass
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(ref, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return str(path)
 
 

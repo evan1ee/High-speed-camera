@@ -27,8 +27,25 @@ from hsc.app_paths import data_root
 
 
 ROOT = data_root()
+LOG_FILE = ROOT / "app.log"
 INJECTION_DIR = ROOT / "injection images"
 MEASURE_DIR = ROOT / "measure"
+
+
+def _log_to_file(text):
+    """Append a timestamped message to ``data_root()/app.log``.
+
+    The frozen build is windowed (``console=False``) so stdout is discarded;
+    this is the only persistent record of GUI activity. Wrapped so that logging
+    can never break the GUI (a full disk / locked file is swallowed silently).
+    """
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        line = str(text).rstrip("\n")
+        with open(LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {line}\n")
+    except Exception:
+        pass
 BLOCK_DIR = MEASURE_DIR / "angle_block"
 SCALE_DIR = MEASURE_DIR / "block"
 REFERENCE_DIR = MEASURE_DIR / "reference"
@@ -87,6 +104,10 @@ class CaptureGui(tk.Tk):
         self.line_len_var = tk.StringVar(value="Full")
         self.ref_mm_var = tk.StringVar(value="10")
         self._block_line_frac = None
+
+        # Uncaught Tk callback errors must not vanish (stderr is None when the
+        # build is frozen/windowed) -- send the traceback to app.log.
+        self.report_callback_exception = self._report_callback_exception
 
         self._build_layout()
         self.after(100, self._drain_output_queue)
@@ -219,6 +240,18 @@ class CaptureGui(tk.Tk):
     def _append_log(self, text):
         self.log_text.insert(tk.END, text)
         self.log_text.see(tk.END)
+        _log_to_file(text)
+
+    def _report_callback_exception(self, exc, val, tb):
+        """Catch-all for uncaught Tk callback errors: log the traceback (which
+        would otherwise be written to a missing stderr) and surface it briefly."""
+        import traceback
+
+        _log_to_file("[Callback Error]\n" + "".join(traceback.format_exception(exc, val, tb)))
+        try:
+            self.status_var.set(f"Unexpected error: {val}")
+        except Exception:
+            pass
 
     def _validate_inputs(self):
         try:
@@ -1249,6 +1282,22 @@ class CaptureGui(tk.Tk):
                         self.capture_requested.clear()
                         self.run_button.configure(state=tk.NORMAL)
                         self.stop_button.configure(state=tk.DISABLED)
+                    # Release any other pending camera request so its button is
+                    # not stranded disabled when the worker dies (e.g. the camera
+                    # fails to enumerate after the operator clicked Calibrate).
+                    if self.block_requested.is_set():
+                        self.block_requested.clear()
+                        self.block_button.configure(state=tk.NORMAL)
+                    if self.scale_requested.is_set():
+                        self.scale_requested.clear()
+                        self.scale_button.configure(state=tk.NORMAL)
+                        self.autoscale_button.configure(state=tk.NORMAL)
+                    if self.measblock_requested.is_set():
+                        self.measblock_requested.clear()
+                        self.measblock_button.configure(state=tk.NORMAL)
+                    if self.reference_requested.is_set():
+                        self.reference_requested.clear()
+                        self.reference_button.configure(state=tk.NORMAL)
 
         except queue.Empty:
             pass
@@ -1291,7 +1340,7 @@ class CaptureGui(tk.Tk):
             if self.camera_thread and self.camera_thread.is_alive():
                 self.camera_thread.join(timeout=2)
         except Exception as exc:
-            print(f"Close error: {exc}")
+            _log_to_file(f"[Close Error] {exc}")
 
         self.destroy()
 
@@ -1330,7 +1379,15 @@ def _run_selftest(folder):
         log_path.write_text(text, encoding="utf-8")
     except Exception:
         pass
-    print(text)
+    # The outcome is already in selftest.log; echo to stdout only when there is
+    # one (a frozen/windowed build has sys.stdout is None).
+    import sys
+
+    if sys.stdout is not None:
+        try:
+            print(text)
+        except Exception:
+            pass
     return code
 
 

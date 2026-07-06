@@ -230,3 +230,30 @@ uv run python -m hsc.measure_block "data\measure\angle_block\block_<timestamp>.b
 - `SUPERSAMPLE`, `LINE_COLOR`, `APEX_GAP` — render scale, line color, nozzle gap.
 
 `hsc/injection_extract.py`: `DIFF_THRESH`, `END_RESIDUAL_K`, `DOWNSAMPLE`, before/after padding.
+
+---
+
+## Tests
+
+```bash
+uv run python -m pytest
+```
+
+17+ tests: module imports, the measurement pipeline on a synthetic wedge,
+injection-bounds detection + copy-window clamping, and equivalence of the three
+motion-signal back-ends (C++ / NumPy raw-BMP / PIL). Measurement tests need no
+camera. Tests that depend on rig data (`data/` is git-ignored) skip cleanly when
+it is absent.
+
+---
+
+## Recovery
+
+- **Reset calibration / reference:** delete `data\calibration.json` or
+  `data\reference_lines.json` to clear a bad calibration or nozzle reference, then
+  re-run **Auto Calibrate** / **Set Reference**. After any re-save a `.bak` of the
+  previous version sits next to each file (writes are atomic, so a crash mid-save
+  can't corrupt them).
+- **Logs:** GUI activity is appended to `data\app.log` (next to the .exe in the
+  frozen build). The headless `--selftest` writes its outcome to `selftest.log`
+  next to the .exe.

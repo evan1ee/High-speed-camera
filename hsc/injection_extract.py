@@ -90,6 +90,10 @@ def _bmp_info(path):
         width = struct.unpack_from("<i", head, 18)[0]
         height = struct.unpack_from("<i", head, 22)[0]
         bpp = struct.unpack_from("<H", head, 28)[0]
+        # Reject degenerate dimensions before they reach numpy reshape (a
+        # negative/zero width would otherwise slip through as bad geometry).
+        if width <= 0 or height == 0:
+            return None
         return offset, width, abs(height), bpp
     except OSError:
         return None
@@ -119,8 +123,13 @@ def scan_with_cpp(source_dir, n_expected, diff_thresh=25):
         return None
     if proc.returncode != 0:
         return None
-    signal = np.frombuffer(proc.stdout, dtype=np.int32).astype(np.float64)
-    if signal.size != n_expected:
+    try:
+        signal = np.frombuffer(proc.stdout, dtype=np.int32).astype(np.float64)
+        if signal.size != n_expected:
+            return None
+    except ValueError:
+        # Garbled stdout (byte count not a multiple of 4) -> fall back to the
+        # Python back-ends instead of crashing the whole extraction.
         return None
     return signal
 
@@ -260,11 +269,22 @@ def raw_downsample_getter(files):
         return None
     offset, width, height, _ = info
     npix = width * height
+    ds_shape = (
+        (height + DOWNSAMPLE - 1) // DOWNSAMPLE,
+        (width + DOWNSAMPLE - 1) // DOWNSAMPLE,
+    )
 
     def get(i):
-        data = np.fromfile(files[i], dtype=np.uint8)
-        frame = data[offset : offset + npix].reshape(height, width)
-        return frame[::DOWNSAMPLE, ::DOWNSAMPLE].astype(np.int16)
+        try:
+            data = np.fromfile(files[i], dtype=np.uint8)
+            if data.size < offset + npix:
+                raise ValueError(f"Short BMP: {files[i]}")
+            frame = data[offset : offset + npix].reshape(height, width)
+            return frame[::DOWNSAMPLE, ::DOWNSAMPLE].astype(np.int16)
+        except (OSError, ValueError):
+            # A single unreadable/truncated frame contributes nothing (mirrors
+            # the C++ scanner leaving signal[i]=0), rather than crashing the scan.
+            return np.zeros(ds_shape, dtype=np.int16)
 
     return get
 

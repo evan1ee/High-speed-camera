@@ -18,7 +18,10 @@ Capture button.
   *same already-open camera* (so Capture is instant). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto make slow-motion video → auto measure`.
   Threads talk to the UI via
-  `output_queue` / `preview_queue` drained by `after()` callbacks. Buttons: Stop Preview,
+  `output_queue` / `preview_queue` drained by `after()` callbacks. `_append_log` mirrors
+  every message (timestamped) to `data_root()/app.log` (the frozen build is windowed, so
+  that file is the only persistent record); `report_callback_exception` also logs uncaught
+  Tk callback tracebacks there. Buttons: Stop Preview,
   Capture, Stop, Find Injection, Measure, Measure Angle Block, Make Video, Calibrate Scale,
   Auto Calibrate, Measure Block, Set Reference, Open Last Folder.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
@@ -62,6 +65,8 @@ Capture button.
   **without** overwriting `calibration.json` (writes a `*_measured.bmp`). `load_calibration()` is
   the read API. NB: Auto Calibrate always *saves* a new calibration (assuming the entered
   distance); Measure Block only *reads* it — calibrate on the known reference, then measure others.
+  `save_calibration` / `save_reference` back up any existing JSON to `<name>.bak` and write
+  atomically (temp file + `os.replace`) so a crash mid-save can't corrupt the rig's calibration.
 - **`hsc/reference_lines.py` / `hsc/reference_ui.py`** — nozzle **reference lines**: the **tip edge**
   (red) and the **centerline** (blue, through the tip midpoint, perpendicular, across the frame =
   spray axis). GUI "Set Reference" **captures a nozzle still** (to `data\measure\reference\`, no jet in

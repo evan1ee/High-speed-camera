@@ -61,6 +61,15 @@ HighSpeedCamera.exe --selftest "D:\path\to\injection images\<run>"
 
 `selftest.log` should end with `SELFTEST PASSED`.
 
+After the selftest, also **double-click `HighSpeedCamera.exe` once** and confirm the
+window opens and the live preview starts — the selftest is headless and does not
+cover Tk bundling.
+
+The scanner binary's checksum is recorded in `vendor\bin\injection_scan.exe.sha256`
+(`<hash> *injection_scan.exe`). After rebuilding the exe with
+`native\build_injection_scan.bat`, recompute it with
+`certutil -hashfile vendor\bin\injection_scan.exe SHA256` and update that file.
+
 ## Rebuilding notes
 
 - Close the app before rebuilding (a running exe locks `dist\`).

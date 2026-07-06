@@ -16,6 +16,7 @@ ROOT = resource_root()
 SDK_DIR = ROOT / "Development" / "Samples" / "Python" / "IMV" / "MVSDK"
 RUNTIME_DIR = ROOT / "Runtime" / ("x64" if sys.maxsize > 2**32 else "Win32")
 DLL_DIRECTORY_HANDLES = []
+_SDK_PATH_READY = False
 
 
 # Default capture setup.
@@ -57,11 +58,17 @@ def load_sdk():
     if not SDK_DIR.exists():
         raise FileNotFoundError(f"SDK Python wrapper not found: {SDK_DIR}")
 
+    global _SDK_PATH_READY
     old_cwd = os.getcwd()
-    sys.path.insert(0, str(SDK_DIR))
-    if hasattr(os, "add_dll_directory"):
-        DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(RUNTIME_DIR)))
-    os.environ["PATH"] = f"{RUNTIME_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
+    # Path / DLL-directory / PATH setup only needs to happen once per process;
+    # load_sdk is called on every preview restart. Repeating it leaks DLL
+    # directory handles and re-prepends PATH endlessly.
+    if not _SDK_PATH_READY:
+        sys.path.insert(0, str(SDK_DIR))
+        if hasattr(os, "add_dll_directory"):
+            DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(RUNTIME_DIR)))
+        os.environ["PATH"] = f"{RUNTIME_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
+        _SDK_PATH_READY = True
     try:
         # IMVApi.py loads Runtime/x64/MVSDKmd.dll by a relative path, so import it
         # from the wrapper directory.
