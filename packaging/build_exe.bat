@@ -4,9 +4,9 @@ REM Output: dist\HighSpeedCamera\  (zip this folder and copy it to another PC).
 REM
 REM Requires: pip install pyinstaller  (one time).
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
-python -m PyInstaller HighSpeedCamera.spec --noconfirm --clean
+python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
     echo BUILD FAILED.
