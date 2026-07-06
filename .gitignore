@@ -1,0 +1,13 @@
+# PyInstaller build output (large, regenerable)
+build/
+dist/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local data and output directories
+captures/
+injection images/
+injection\ images/
+measure/
