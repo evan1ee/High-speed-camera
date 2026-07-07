@@ -72,3 +72,62 @@ def make_meta(bounds, window, method):
         "copy_end": int(copy_end),
         "method": str(method),
     }
+
+
+def replay(source_dir, before=30, after=30):
+    """Re-run the smart-save decision on an existing burst folder on disk.
+
+    Uses the same signal back-ends and downsampled presence frames as the
+    offline extractor, so the result shows exactly what smart save WOULD have
+    kept for this burst. Returns {"bounds", "window", "names"}.
+    """
+    files = injection_extract.list_frames(source_dir)
+    if not files:
+        raise RuntimeError(f"No image frames found in {source_dir}")
+    signal, _method = injection_extract.compute_motion_signal_best(files)
+    getter = injection_extract.raw_downsample_getter(files)
+    if getter is None:                       # non-BMP burst: decode via PIL
+        from PIL import Image
+        ds = injection_extract.DOWNSAMPLE
+        def getter(i):
+            img = np.asarray(Image.open(files[i]).convert("L"), dtype=np.int16)
+            return img[::ds, ::ds]
+    bounds, window = plan_window(signal, getter, len(files), before, after)
+    names = ([] if window is None
+             else [f.name for f in files[window[0] : window[1] + 1]])
+    return {"bounds": bounds, "window": window, "names": names}
+
+
+def _main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Replay the smart-save decision on an existing burst.")
+    parser.add_argument("source", help="a data\\captures\\<run> folder")
+    parser.add_argument("--before", type=int, default=30)
+    parser.add_argument("--after", type=int, default=30)
+    parser.add_argument("--compare", action="store_true",
+                        help="also run the legacy detector and diff the windows")
+    args = parser.parse_args()
+
+    rep = replay(args.source, args.before, args.after)
+    if rep["bounds"] is None:
+        print("no injection detected (legacy full save would apply)")
+        return
+    start, end, peak = rep["bounds"]
+    print(f"bounds: start={start} end={end} peak={peak}")
+    print(f"window: frames {rep['window'][0]}..{rep['window'][1]} "
+          f"({len(rep['names'])} files kept of "
+          f"{len(injection_extract.list_frames(args.source))})")
+    if args.compare:
+        legacy = injection_extract.extract_injection(
+            args.source, before=args.before, after=args.after, copy=False)
+        same = (legacy["copy_start_frame"] == rep["names"][0]
+                and legacy["copy_end_frame"] == rep["names"][-1])
+        print("IDENTICAL to legacy extraction" if same else
+              f"DIFFERS: legacy {legacy['copy_start_frame']}.."
+              f"{legacy['copy_end_frame']}")
+
+
+if __name__ == "__main__":
+    _main()
