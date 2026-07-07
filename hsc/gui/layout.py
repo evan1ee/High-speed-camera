@@ -49,6 +49,9 @@ class LayoutMixin:
         checks = ttk.Frame(controls)
         checks.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
         ttk.Checkbutton(checks, text="Defer save", variable=self.defer_save_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(checks, text="Smart save", variable=self.smart_save_var).pack(
+            side=tk.LEFT, padx=(16, 0)
+        )
         ttk.Checkbutton(checks, text="Timestamp folder", variable=self.timestamp_dir_var).pack(
             side=tk.LEFT, padx=(16, 0)
         )

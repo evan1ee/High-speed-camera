@@ -18,6 +18,8 @@ from PIL import Image
 
 from hsc import capture_image
 from hsc import injection_extract
+from hsc import smart_save
+from hsc.gui.config import INJECTION_DIR
 
 
 class CameraWorkerMixin:
@@ -147,22 +149,18 @@ class CameraWorkerMixin:
             saved_paths = []
             motion_signal = None
             small_frames = []
+            extract_result = None
+            bounds = None
             ds = injection_extract.DOWNSAMPLE
+            smart = bool(getattr(params, "smart_save", False)
+                         and params.defer_save and not params.no_save)
             if cloned_frames:
-                save_start = time.perf_counter()
-                # Build the motion signal AND keep a small downsampled copy of
-                # every frame in RAM while saving, so the auto injection finder
-                # needs no disk read-back of the new files.
+                # Pass A (RAM only): motion signal + downsampled copies.
+                # No disk I/O here -- this is what lets smart mode decide the
+                # window BEFORE anything is written.
                 motion_signal = []
                 prev_pixels = None
-                for frame_no, clone_frame in enumerate(cloned_frames, start=1):
-                    output_path = capture_image.make_frame_path(
-                        output_dir, params.prefix, frame_no, suffix
-                    )
-                    capture_image.save_frame(cam, clone_frame, output_path, sdk)
-                    saved += 1
-                    saved_paths.append(str(output_path))
-
+                for clone_frame in cloned_frames:
                     info = clone_frame.frameInfo
                     w, h = info.width, info.height
                     n_pixels = w * h
@@ -182,16 +180,79 @@ class CameraWorkerMixin:
                     else:
                         motion_signal.append(0.0)
                     prev_pixels = pixels
-                    # Downsampled copy for the jet-presence (end) detection.
                     small_frames.append(flat.reshape(h, w)[::ds, ::ds].copy())
 
-                save_elapsed = time.perf_counter() - save_start
+                # Detect BEFORE saving (same detection code as always; the
+                # window math lives in smart_save.plan_window, proven equal
+                # to build_result's by test).
+                window = None
+                try:
+                    bounds, window = smart_save.plan_window(
+                        motion_signal,
+                        lambda i: small_frames[i].astype(np.int16),
+                        len(small_frames), params.before, params.after,
+                    )
+                except Exception as exc:
+                    bounds, window = None, None
+                    self.output_queue.put(f"[Detect warning] {exc}\n")
+
                 self.output_queue.put(
-                    f"Captured {captured} frames in {elapsed:.3f}s, capture FPS: {fps:.1f}\n"
+                    f"Captured {captured} frames in {elapsed:.3f}s, "
+                    f"capture FPS: {fps:.1f}\n"
                 )
-                self.output_queue.put(
-                    f"Saved {saved} cloned frames to {output_dir} in {save_elapsed:.3f}s\n"
-                )
+
+                save_start = time.perf_counter()
+                if smart and bounds is not None:
+                    # Smart save: write ONLY the window, directly into the
+                    # injection-images run folder. Frame names keep their
+                    # original burst indices, matching what the legacy
+                    # save-then-copy pipeline produces.
+                    dest_dir = injection_extract.make_dest_dir(
+                        output_dir, INJECTION_DIR)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    names = [
+                        capture_image.make_frame_path(
+                            dest_dir, params.prefix, i + 1, suffix).name
+                        for i in range(len(cloned_frames))
+                    ]
+                    for i in range(window[0], window[1] + 1):
+                        capture_image.save_frame(
+                            cam, cloned_frames[i], dest_dir / names[i], sdk)
+                        saved += 1
+                    smart_save.write_meta(dest_dir, bounds, window,
+                                          "in-memory (smart save)")
+                    extract_result = smart_save.make_result(
+                        names, motion_signal, bounds, window,
+                        source_dir=str(output_dir), dest_dir=str(dest_dir),
+                        before=params.before, after=params.after,
+                        method="in-memory (smart save)")
+                    save_elapsed = time.perf_counter() - save_start
+                    self.output_queue.put(
+                        f"Smart save: kept {saved} of {captured} frames "
+                        f"-> {dest_dir} in {save_elapsed:.3f}s\n"
+                    )
+                    try:                     # captures run dir stays empty
+                        output_dir.rmdir()
+                    except OSError:
+                        pass
+                else:
+                    if smart:
+                        self.output_queue.put(
+                            "Smart save: no injection detected -- "
+                            "saving the full burst as usual.\n"
+                        )
+                    for frame_no, clone_frame in enumerate(cloned_frames, start=1):
+                        output_path = capture_image.make_frame_path(
+                            output_dir, params.prefix, frame_no, suffix
+                        )
+                        capture_image.save_frame(cam, clone_frame, output_path, sdk)
+                        saved += 1
+                        saved_paths.append(str(output_path))
+                    save_elapsed = time.perf_counter() - save_start
+                    self.output_queue.put(
+                        f"Saved {saved} cloned frames to {output_dir} "
+                        f"in {save_elapsed:.3f}s\n"
+                    )
             else:
                 verb = "Captured" if params.no_save else "Saved"
                 where = "" if params.no_save else f" to {output_dir}"
@@ -199,20 +260,6 @@ class CameraWorkerMixin:
                 self.output_queue.put(
                     f"Elapsed: {elapsed:.3f}s, effective FPS: {fps:.1f}\n"
                 )
-
-            # Detect injection bounds in RAM (onset from the motion signal,
-            # end from jet presence in the downsampled frames) before the
-            # cloned frames are released.
-            bounds = None
-            if motion_signal and small_frames:
-                try:
-                    bounds = injection_extract.detect_bounds_with_presence(
-                        np.asarray(motion_signal, dtype=np.float64),
-                        lambda i: small_frames[i].astype(np.int16),
-                        len(small_frames),
-                    )
-                except Exception as exc:
-                    self.output_queue.put(f"[Detect warning] {exc}\n")
 
             self.output_queue.put(
                 (
@@ -224,6 +271,7 @@ class CameraWorkerMixin:
                         "bounds": bounds,
                         "before": params.before,
                         "after": params.after,
+                        "extract_result": extract_result,
                     },
                 )
             )

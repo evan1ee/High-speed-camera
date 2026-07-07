@@ -12,6 +12,9 @@ build_result-compatible metadata dict, and the injection_meta.json payload.
 Kept free of SDK/Tk imports so it is unit-testable headless.
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 from hsc import injection_extract
@@ -72,6 +75,16 @@ def make_meta(bounds, window, method):
         "copy_end": int(copy_end),
         "method": str(method),
     }
+
+
+def write_meta(dest_dir, bounds, window, method):
+    """Write injection_meta.json (best-effort -- metadata, never a failure)."""
+    try:
+        (Path(dest_dir) / "injection_meta.json").write_text(
+            json.dumps(make_meta(bounds, window, method), indent=2),
+            encoding="utf-8")
+    except OSError:
+        pass
 
 
 def replay(source_dir, before=30, after=30):
