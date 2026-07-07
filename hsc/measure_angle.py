@@ -139,6 +139,10 @@ QUALITY_SPAN_BAD = 0.60    # <= this -> 0   (jet collapsed to 60%)
 # Run-level angle repeatability (std deg across measured frames).
 QUALITY_STD_GOOD = 0.06    # deg <= this -> 100
 QUALITY_STD_BAD = 0.30     # deg >= this -> 0
+# Angle policy when a nozzle reference is set: "max" reports the worse edge's
+# deviation (legacy -- a badly-fitted edge becomes the number); "trusted"
+# reports the trusted edge alone when exactly one edge is Low-confidence.
+ANGLE_POLICY = "max"       # "trusted" is part of the opt-in edge-detection V2 set
 CONF_HIGH = 75             # score >= this  -> High
 CONF_MEDIUM = 50           # score >= this  -> Medium, else Low
 CONF_COLORS = {            # BGR text color per confidence level
@@ -582,6 +586,24 @@ def frame_quality(result, span_ratio):
     return score, {"fit": s_fit, "coverage": s_cov, "span": s_span}
 
 
+def edge_quality(rms, edge_conf):
+    """0-100 score for ONE edge: fit straightness AND estimator confidence."""
+    s_fit = _ramp_score(rms, QUALITY_RMS_GOOD, QUALITY_RMS_BAD)
+    s_conf = float(np.clip(edge_conf, 0.0, 1.0)) * 100.0
+    return min(s_fit, s_conf)
+
+
+def resolve_angle(angle_upper, angle_lower, conf_upper, conf_lower):
+    """Reported angle + policy tag. Under "trusted", when exactly one edge is
+    Low-confidence the other edge's deviation is reported alone."""
+    if ANGLE_POLICY == "trusted":
+        if conf_upper != "Low" and conf_lower == "Low":
+            return angle_upper, "upper-only"
+        if conf_lower != "Low" and conf_upper == "Low":
+            return angle_lower, "lower-only"
+    return max(angle_upper, angle_lower), "max"
+
+
 # ---- Per-frame orchestration --------------------------------------------
 def measure_frame(gray, bg=None, start_x=None, end_x=None, line_frac=None):
     """Run the full pipeline on one frame.
@@ -770,13 +792,23 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
         r["quality"] = score
         r["quality_subscores"] = subs
         r["confidence"] = confidence_level(score)
+        q_up = edge_quality(r["rms_upper"], r.get("edge_conf_upper", 1.0))
+        q_lo = edge_quality(r["rms_lower"], r.get("edge_conf_lower", 1.0))
+        r["quality_upper"], r["quality_lower"] = q_up, q_lo
+        r["confidence_upper"] = confidence_level(q_up)
+        r["confidence_lower"] = confidence_level(q_lo)
+        r["angle_policy"] = "max"
         has_ref = ref and ref.get("image_size") == [gray.shape[1], gray.shape[0]]
         # Angle vs. the blue centerline: the deviation of each green edge from the
-        # spray axis. Report the larger of the two half-angles (the worst edge).
+        # spray axis. Report the larger of the two half-angles (the worst edge) --
+        # or, under ANGLE_POLICY="trusted", the trusted edge alone when exactly
+        # one edge is Low-confidence.
         if has_ref and blue_dir is not None:
             r["angle_upper"] = line_angle_deg(blue_dir, r["dir_upper"])
             r["angle_lower"] = line_angle_deg(blue_dir, r["dir_lower"])
-            r["angle"] = max(r["angle_upper"], r["angle_lower"])
+            r["angle"], r["angle_policy"] = resolve_angle(
+                r["angle_upper"], r["angle_lower"],
+                r["confidence_upper"], r["confidence_lower"])
         # Confine the green jet lines to the reference rectangle's x-window.
         if has_ref and ref.get("rect"):
             rx0, _, rx1, _ = ref["rect"]
@@ -809,18 +841,21 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
 
     with open(dest_dir / "angles.csv", "w", encoding="utf-8") as fh:
         fh.write("frame,angle_deg,k_upper,k_lower,n_points,"
-                 "rms_up_px,rms_lo_px,coverage,span_ratio,quality,confidence\n")
+                 "rms_up_px,rms_lo_px,coverage,span_ratio,quality,confidence,"
+                 "q_up,q_lo,policy\n")
         for name, _, r in measured:
             fh.write(f"{name},{r['angle']:.2f},{r['k_upper']:.5f},"
                      f"{r['k_lower']:.5f},{r['n_points']},"
                      f"{r['rms_upper']:.3f},{r['rms_lower']:.3f},"
                      f"{r['coverage']:.3f},{r['span_ratio']:.3f},"
-                     f"{r['quality']:.0f},{r['confidence']}\n")
-        fh.write(f"mean,{np.mean(angles):.2f},,,,,,,,,\n")
-        fh.write(f"std,{angle_std:.3f},,,,,,,,,\n")
-        fh.write(f"trusted_mean,{trusted_mean:.2f},,,{len(trusted)},,,,,,"
+                     f"{r['quality']:.0f},{r['confidence']},"
+                     f"{r['quality_upper']:.0f},{r['quality_lower']:.0f},"
+                     f"{r['angle_policy']}\n")
+        fh.write(f"mean,{np.mean(angles):.2f},,,,,,,,,,,,\n")
+        fh.write(f"std,{angle_std:.3f},,,,,,,,,,,,\n")
+        fh.write(f"trusted_mean,{trusted_mean:.2f},,,{len(trusted)},,,,,,,,,"
                  f"excl. Low frames\n")
-        fh.write(f"run_confidence,{run_conf} ({run_score:.0f}),,,,,,,,,\n")
+        fh.write(f"run_confidence,{run_conf} ({run_score:.0f}),,,,,,,,,,,,\n")
 
     return {
         "source_dir": str(source_dir),
