@@ -30,7 +30,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
+from scipy.optimize import curve_fit
 from scipy.signal import savgol_filter
+from scipy.special import erf as _scipy_erf
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 
 from hsc import injection_extract
@@ -73,6 +75,18 @@ EDGE_BAND_MAX = 12         # cap the outward extension (px) per side
 EDGE_VISIBLE_FRAC = 0.25
 EDGE_REFINE_SPAN = 3       # px beyond the gradient peak to search for the crossing
 EDGE_PICK_TOL = 1.10       # visible locus wins unless grad is >10% straighter
+
+# ---- erf (blurred-step) edge model ------------------------------------------
+# The gradient peak marks the ~50% ramp point and the visible-crossing walks a
+# fixed fraction -- both are biased when one side has a slow skirt/reflection
+# falloff. Fitting I(y) = base + amp*Phi((y-mu)/sigma) per column PER SIDE gives
+# the true step center mu with that side's own base/amp/sigma, so a skirted
+# lower edge no longer drags its fitted line. Selected per edge by the same
+# straightness contest as the visible locus (EDGE_PICK_TOL).
+EDGE_MODEL = "legacy"        # "erf" is part of the opt-in edge-detection V2 set
+ERF_FIT_HALF = 5             # fit window: peak +/- this many px
+ERF_SIGMA_MAX = 5.0          # reject wider ramps as "no edge here"
+ERF_MIN_AMP = 8.0            # reject fits with less contrast than this
 
 # ---- Background construction ----------------------------------------------
 # "window"   : temporal median over the whole injection window (legacy). When
@@ -255,6 +269,44 @@ def _visible_edge_crossing(seg, peak, core, is_top, frac, span):
     return None
 
 
+def _erf_edge(seg, peak, core, is_top):
+    """Fit a blurred-step model around the gradient peak of one column side.
+
+    ``seg`` is the column segment (float array), ``peak`` the integer gradient
+    peak index within it, ``core`` the bright-core index, ``is_top`` selects the
+    ramp orientation (top edge: intensity RISES with row index toward the core;
+    bottom edge: falls). Returns ``(subpixel_row_in_seg | None, confidence)``
+    where confidence in [0, 1] reflects the residual vs the fitted amplitude.
+    """
+    lo = max(0, peak - ERF_FIT_HALF)
+    hi = min(len(seg) - 1, peak + ERF_FIT_HALF)
+    if hi - lo < 4:
+        return None, 0.0
+    y = np.arange(lo, hi + 1, dtype=float)
+    v = np.asarray(seg[lo : hi + 1], dtype=float)
+    vmin, vmax = float(v.min()), float(v.max())
+    if vmax - vmin < ERF_MIN_AMP:
+        return None, 0.0
+    sign = 1.0 if is_top else -1.0
+
+    def model(yy, mu, sigma, base, amp):
+        return base + amp * 0.5 * (1.0 + _scipy_erf(sign * (yy - mu)
+                                                    / (sigma * np.sqrt(2.0))))
+
+    p0 = (float(peak), 1.0, vmin, vmax - vmin)
+    bounds = ((lo, 0.3, 0.0, ERF_MIN_AMP), (hi, ERF_SIGMA_MAX, 255.0, 255.0))
+    try:
+        popt, _ = curve_fit(model, y, v, p0=p0, bounds=bounds, maxfev=200)
+    except (RuntimeError, ValueError):
+        return None, 0.0
+    mu, sigma, base, amp = popt
+    resid = float(np.sqrt(np.mean((model(y, *popt) - v) ** 2)))
+    conf = float(np.clip(1.0 - resid / max(amp, 1e-6), 0.0, 1.0))
+    if conf <= 0.0:
+        return None, 0.0
+    return float(mu), conf
+
+
 def extract_edges(gray, comp, pad=EDGE_PAD, smooth=EDGE_SMOOTH,
                   return_candidates=False):
     """Column-wise edges within the jet region (largest Otsu component).
@@ -273,16 +325,19 @@ def extract_edges(gray, comp, pad=EDGE_PAD, smooth=EDGE_SMOOTH,
     interpolation of the three gradient samples straddling the peak, so the
     returned edge positions are continuous (float), not integer rows.
 
-    With ``return_candidates=True`` the return value is
-    ``(xs, (y_top_grad, y_top_vis), (y_bot_grad, y_bot_vis))`` -- the gradient
-    locus plus the visible-edge crossing locus (see EDGE_VISIBLE_FRAC) so the
-    caller can pick the straighter one per edge. The default 3-tuple returns
-    the gradient locus only.
+    With ``return_candidates=True`` the return value is ``(xs, top, bot)``
+    where ``top``/``bot`` are dicts ``{"grad", "vis", "erf", "conf"}``: the
+    gradient locus, the visible-edge crossing locus (see EDGE_VISIBLE_FRAC),
+    the erf blurred-step locus with its per-column confidence (both None
+    unless ``EDGE_MODEL == "erf"``) -- so the caller can pick the straightest
+    candidate per edge. The default 3-tuple returns the gradient locus only.
     """
     h = gray.shape[0]
     col_smooth = gaussian_filter1d(gray.astype(np.float64), smooth, axis=0)
     want_vis = return_candidates and EDGE_VISIBLE_FRAC is not None
+    want_erf = return_candidates and EDGE_MODEL == "erf"
     xs, y_top, y_bot, y_top_v, y_bot_v = [], [], [], [], []
+    y_top_e, y_bot_e, conf_top, conf_bot = [], [], [], []
     for x in np.where(comp.any(axis=0))[0]:
         rows = np.where(comp[:, x])[0]
         rtop, rbot = int(rows.min()), int(rows.max())
@@ -320,17 +375,61 @@ def extract_edges(gray, comp, pad=EDGE_PAD, smooth=EDGE_SMOOTH,
             ) if core < seg.size - 1 else None
             y_top_v.append(float(r0 + tv) if tv is not None else float(top))
             y_bot_v.append(float(r0 + bv) if bv is not None else float(bot))
+        if want_erf:
+            # Fit on the RAW column, not the smoothed one -- the model handles
+            # noise, and smoothing would inflate the fitted sigma.
+            raw_seg = gray[r0 : r1 + 1, x].astype(np.float64)
+            te, tc = _erf_edge(raw_seg, it, core, True) if core >= 1 else (None, 0.0)
+            be, bc = _erf_edge(raw_seg, ib, core, False) \
+                if core < seg.size - 1 else (None, 0.0)
+            y_top_e.append(float(r0 + te) if te is not None else float(top))
+            conf_top.append(tc)
+            y_bot_e.append(float(r0 + be) if be is not None else float(bot))
+            conf_bot.append(bc)
     xs = np.array(xs)
     y_top, y_bot = np.array(y_top), np.array(y_bot)
     if not return_candidates:
         return xs, y_top, y_bot
-    if not want_vis:
-        return xs, (y_top, y_top.copy()), (y_bot, y_bot.copy())
-    return xs, (y_top, np.array(y_top_v)), (y_bot, np.array(y_bot_v))
+    top = {"grad": y_top,
+           "vis": np.array(y_top_v) if want_vis else y_top.copy(),
+           "erf": np.array(y_top_e) if want_erf else None,
+           "conf": np.array(conf_top) if want_erf else None}
+    bot = {"grad": y_bot,
+           "vis": np.array(y_bot_v) if want_vis else y_bot.copy(),
+           "erf": np.array(y_bot_e) if want_erf else None,
+           "conf": np.array(conf_bot) if want_erf else None}
+    return xs, top, bot
+
+
+def _pick_best_locus(xr, cands):
+    """Choose the straightest candidate locus for one edge.
+
+    ``cands`` is a list of (name, roi_points, full_array); straightness is the
+    robust sigma around each candidate's own least-squares line (as in
+    _pick_edge_locus). Later entries win ties within EDGE_PICK_TOL, so order
+    candidates from most conservative to most preferred: grad, vis, erf.
+    Returns (name, full_array).
+    """
+    if xr.size < 2:
+        return cands[0][0], cands[0][2]
+
+    def sig(y):
+        k, b = np.polyfit(xr, y, 1)
+        return _robust_sigma(y - (k * xr + b))
+
+    best_name, best_full, best_sig = cands[0][0], cands[0][2], sig(cands[0][1])
+    for name, roi_pts, full in cands[1:]:
+        s = sig(roi_pts)
+        if s <= EDGE_PICK_TOL * best_sig:
+            best_name, best_full, best_sig = name, full, min(s, best_sig)
+    return best_name, best_full
 
 
 def _pick_edge_locus(xr, grad_roi, vis_roi, tol=EDGE_PICK_TOL):
     """Choose gradient vs visible-edge points for one edge: the straighter wins.
+
+    Superseded by _pick_best_locus (which also handles the erf candidate);
+    kept for reference/CLI compatibility.
 
     Straightness = robust sigma of the ROI points around their own least-squares
     line. The visible locus is preferred (it matches what the eye sees) unless
@@ -509,12 +608,18 @@ def measure_frame(gray, bg=None, start_x=None, end_x=None, line_frac=None):
         return None
     xr = xs[roi]
 
-    # Per-edge locus selection: visible-edge crossing where it is stable,
-    # gradient peak where the crossing is noise-amplified (skirt/reflection).
-    y_top = top_cands[1] if _pick_edge_locus(
-        xr.astype(float), top_cands[0][roi], top_cands[1][roi]) else top_cands[0]
-    y_bot = bot_cands[1] if _pick_edge_locus(
-        xr.astype(float), bot_cands[0][roi], bot_cands[1][roi]) else bot_cands[0]
+    # Per-edge locus selection among the candidates (gradient peak, visible
+    # crossing, and -- in erf mode -- the blurred-step fit): straightest wins,
+    # later candidates preferred on ties (EDGE_PICK_TOL).
+    def _cands(c):
+        lst = [("grad", c["grad"][roi], c["grad"]),
+               ("vis", c["vis"][roi], c["vis"])]
+        if c["erf"] is not None:
+            lst.append(("erf", c["erf"][roi], c["erf"]))
+        return lst
+
+    top_name, y_top = _pick_best_locus(xr.astype(float), _cands(top_cands))
+    bot_name, y_bot = _pick_best_locus(xr.astype(float), _cands(bot_cands))
 
     y_top_s = smooth_edges(y_top)
     y_bot_s = smooth_edges(y_bot)
@@ -558,6 +663,12 @@ def measure_frame(gray, bg=None, start_x=None, end_x=None, line_frac=None):
         "lo0": np.array([xa, k_lo * xa + b_lo]),
         "lo1": np.array([xb, k_lo * xb + b_lo]),
         "edges": (xs, y_top_s, y_bot_s),
+        "edge_conf_upper": float(np.mean(top_cands["conf"][roi]))
+                           if top_cands["conf"] is not None else 1.0,
+        "edge_conf_lower": float(np.mean(bot_cands["conf"][roi]))
+                           if bot_cands["conf"] is not None else 1.0,
+        "locus_upper": top_name,
+        "locus_lower": bot_name,
     }
 
 
