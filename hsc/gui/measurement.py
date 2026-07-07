@@ -33,6 +33,10 @@ class MeasurementMixin:
         self.measure_start_var = tk.StringVar(value="10")
         self.measure_end_var = tk.StringVar(value="20")
         self.line_len_var = tk.StringVar(value="Full")
+        # A/B switch: measure with the benchmark-gated V2 edge-detection set
+        # (erf edge model + pre-onset background + trusted-edge policy).
+        # Off = the unchanged legacy pipeline.
+        self.edge_v2_var = tk.BooleanVar(value=False)
 
         self.register_still_request(
             self.block_requested, "block", "BLOCK_CAPTURED", "BLOCK_ERROR",
@@ -76,27 +80,31 @@ class MeasurementMixin:
         except ValueError:
             start, end = 10, 20
 
+        use_v2 = bool(self.edge_v2_var.get())
+        edition = "V2 (erf + pre-onset bg + trusted policy)" if use_v2 else "V1 (legacy)"
         self._append_log(
-            f"Measuring spray angle in {source} (jet frames {start}-{end}) ...\n"
+            f"Measuring spray angle in {source} (jet frames {start}-{end}, "
+            f"edge detection {edition}) ...\n"
         )
         self.status_var.set("Measuring spray angle...")
         self.measure_button.configure(state=tk.DISABLED)
         self.measure_thread = threading.Thread(
             target=self._measure_worker,
-            args=(Path(source), start, end, self._line_frac()),
+            args=(Path(source), start, end, self._line_frac(), use_v2),
             daemon=True,
         )
         self.measure_thread.start()
 
-    def _measure_worker(self, source, start, end, line_frac):
+    def _measure_worker(self, source, start, end, line_frac, use_v2=False):
         def progress(done, total):
             self.output_queue.put(("STATUS", f"Measuring... {done}/{total}"))
 
         try:
-            result = measure_angle.measure_folder(
-                source, dest_base=MEASURE_DIR, start=start, end=end,
-                line_frac=line_frac, progress=progress,
-            )
+            with measure_angle.edge_v2(use_v2):
+                result = measure_angle.measure_folder(
+                    source, dest_base=MEASURE_DIR, start=start, end=end,
+                    line_frac=line_frac, progress=progress,
+                )
             self.output_queue.put(("MEASURE_DONE", result))
         except Exception as exc:
             self.output_queue.put(("MEASURE_ERROR", str(exc)))
@@ -111,8 +119,19 @@ class MeasurementMixin:
             for name, angle in result["frames"]
         )
         confidence = result.get("confidence", "?")
+        model = result.get("edge_model", "legacy")
+        edition = "V1 (legacy)" if model == "legacy" else (
+            f"V2 ({model}/{result.get('bg_mode', '?')}/"
+            f"{result.get('angle_policy_mode', '?')})"
+        )
+        pooled = result.get("pooled_angle")
+        pooled_line = (
+            f"  Pooled angle: {pooled:.2f} deg "
+            f"({result.get('pooled_n', 0)} edge samples, all-frame fit)\n"
+            if pooled is not None and pooled == pooled else ""
+        )
         self._append_log(
-            "Spray angle measured.\n"
+            f"Spray angle measured with edge detection {edition}.\n"
             f"  Frames measured: {result['measured_count']}\n"
             f"  Angle mean/min/max: {result['mean_angle']:.2f} / "
             f"{result['min_angle']:.2f} / {result['max_angle']:.2f} deg "
@@ -121,6 +140,7 @@ class MeasurementMixin:
             f"({result.get('trusted_count', result['measured_count'])} frames, "
             f"Low-confidence excluded)\n"
             f"  Confidence: {confidence} ({result.get('run_quality', 0.0):.0f}/100)\n"
+            f"{pooled_line}"
             f"{lines}"
             f"  Saved to: {result['dest_dir']}\n"
         )

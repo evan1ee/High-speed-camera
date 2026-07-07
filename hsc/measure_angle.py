@@ -24,6 +24,7 @@ image the pipeline runs directly on the grayscale.
 
 import argparse
 import json
+from contextlib import contextmanager
 from math import atan, atan2, degrees
 from pathlib import Path
 
@@ -155,6 +156,32 @@ CONF_COLORS = {            # BGR text color per confidence level
     "Medium": (0, 255, 255),
     "Low": (0, 0, 255),
 }
+
+
+# ---- Edge-detection V2 opt-in ----------------------------------------------
+# The three benchmark-gated V2 flags as one switch. Defaults stay legacy until
+# the A/B comparison on the rig confirms V2; the GUI's "Edge detection V2"
+# checkbox routes each measure run through this context manager.
+V2_FLAGS = {"EDGE_MODEL": "erf", "BG_MODE": "pre-onset", "ANGLE_POLICY": "trusted"}
+
+
+@contextmanager
+def edge_v2(enabled=True):
+    """Temporarily switch the module to the V2 edge-detection flag set
+    (erf edge model + pre-onset background + trusted-edge angle policy),
+    restoring the previous flags on exit. No-op when ``enabled`` is False."""
+    global EDGE_MODEL, BG_MODE, ANGLE_POLICY
+    if not enabled:
+        yield
+        return
+    old = (EDGE_MODEL, BG_MODE, ANGLE_POLICY)
+    EDGE_MODEL = V2_FLAGS["EDGE_MODEL"]
+    BG_MODE = V2_FLAGS["BG_MODE"]
+    ANGLE_POLICY = V2_FLAGS["ANGLE_POLICY"]
+    try:
+        yield
+    finally:
+        EDGE_MODEL, BG_MODE, ANGLE_POLICY = old
 
 
 # ---- I/O -----------------------------------------------------------------
@@ -747,8 +774,11 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
     end = max(start, end)
 
     bg = None
+    bg_source = "window"
     if BG_MODE == "pre-onset":
         bg = _pre_onset_background(files, source_dir)
+        if bg is not None:
+            bg_source = "pre-onset"
     if bg is None:
         bg = compute_background(files)
 
@@ -895,6 +925,10 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
         "trusted_count": len(trusted),
         "pooled_angle": pooled_angle,
         "pooled_n": pooled_n,
+        "edge_model": EDGE_MODEL,
+        "bg_mode": bg_source,   # the background actually used (pre-onset
+                                # silently falls back to window without meta)
+        "angle_policy_mode": ANGLE_POLICY,
         "run_quality": run_score,
         "confidence": run_conf,
         "frames": [(name, r["angle"]) for name, _, r in measured],

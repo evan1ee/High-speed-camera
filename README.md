@@ -105,6 +105,13 @@ RANSAC line fitting → spray-angle = |atan(k_upper) − atan(k_lower)|
 (pre-injection padding is skipped), so the default `10–20` measures the steady jet and skips
 the violent initial burst.
 
+**Edge detection V2 (opt-in A/B):** the **Edge detection V2** checkbox measures with a
+benchmark-gated upgrade — a per-side blurred-step (erf) edge model, a pre-onset background
+built only from the jet-free padding frames, and a trusted-edge angle policy. Off (default)
+= the unchanged legacy pipeline; measure the same folder twice to compare. `angles.csv`
+also gains per-edge quality columns (`q_up,q_lo,policy`) and a `pooled_angle` summary row
+(one fit over all measured frames' edge samples).
+
 ### 4. Measure an angle block (`hsc/measure_block.py`)
 The **Measure Angle Block** button captures a single still of a reference block placed under
 the camera and measures the angle between its two straight edges — a calibration/validation of

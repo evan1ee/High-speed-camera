@@ -131,6 +131,22 @@ captures/cleans); don't assume a specific run folder exists — glob for it.
 angle → visualization/report`, using OpenCV + NumPy + SciPy +
 scikit-learn. Key, hard-won design decisions (do not regress these without reason):
 
+- **Edge-detection V2 (opt-in, benchmark-gated; defaults stay legacy).** Three flags,
+  flipped together by the `edge_v2()` context manager (the GUI's "Edge detection V2"
+  checkbox routes each measure run through it; `V2_FLAGS` is the set):
+  `EDGE_MODEL="erf"` adds a per-side blurred-step fit `I(y)=base+amp·Φ((y−μ)/σ)` per column
+  as a THIRD candidate locus in the straightness contest (each side gets its own σ, so a
+  skirted lower edge stops dragging its line; per-column confidence → `edge_conf_*`);
+  `BG_MODE="pre-onset"` builds the background only from the jet-free padding frames at the
+  folder start (count from `injection_meta.json`, written by `build_result`; silent fallback
+  to the window median — the result key `bg_mode` reports what was actually used);
+  `ANGLE_POLICY="trusted"` reports the trusted edge alone when exactly one edge is
+  Low-confidence (per-edge `edge_quality` scores; `q_up,q_lo,policy` in `angles.csv`).
+  `POOLED_FIT` (always on) additionally reports `pooled_angle`: one RANSAC→TLS fit per edge
+  over ALL measured frames' raw edge samples. `"legacy"`/`"window"`/`"max"` reproduce the old
+  behavior exactly (verified by tests). Gate results live in `benchmark/baseline.csv` vs
+  `benchmark/results/candidate.csv`.
+
 - **Background subtraction first** (per-pixel temporal median) so Otsu/segmentation see only
   the moving jet — the rig has a bright static nozzle/holder that would otherwise dominate the
   largest component.
@@ -204,9 +220,14 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (41 tests: import smoke, GUI wiring/dispatch, synthetic wedge,
-  calibration load, vendor layout, data root). Compile check:
-  `uv run python -m py_compile hsc/*.py hsc/gui/*.py run_gui.py`.
+- Tests: `uv run python -m pytest` (62 tests: import smoke, GUI wiring/dispatch, synthetic wedge,
+  edge-detection V2 (erf/pre-onset/quality/pooled/toggle), calibration load, vendor layout,
+  data root). Compile check:
+  `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.
+- Edge-detection accuracy: `uv run python -m benchmark.run_benchmark <tag>` writes
+  `benchmark/results/<tag>.csv` (synthetic wedges with exact ground truth); compare against
+  the committed `benchmark/baseline.csv` (legacy scores). Flip flags via
+  `measure_angle.edge_v2()` or per-flag module attributes for what-if runs.
 - Measurement: run `uv run python -m hsc.measure_angle` on an existing `data\injection images\<run>`
   folder; render a
   saved frame (native 320×240 by default; raise `MEASURE_RENDER_SCALE` for a zoomable 960×720)

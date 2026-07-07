@@ -55,6 +55,9 @@ class LayoutMixin:
         ttk.Checkbutton(checks, text="Test only, do not save", variable=self.no_save_var).pack(
             side=tk.LEFT, padx=(16, 0)
         )
+        ttk.Checkbutton(checks, text="Edge detection V2", variable=self.edge_v2_var).pack(
+            side=tk.LEFT, padx=(16, 0)
+        )
 
         self._label_entry(controls, "Frames before injection", self.before_var, 5, 0)
         self._label_entry(controls, "Frames after injection", self.after_var, 5, 2)
