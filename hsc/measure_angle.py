@@ -143,6 +143,11 @@ QUALITY_STD_BAD = 0.30     # deg >= this -> 0
 # deviation (legacy -- a badly-fitted edge becomes the number); "trusted"
 # reports the trusted edge alone when exactly one edge is Low-confidence.
 ANGLE_POLICY = "max"       # "trusted" is part of the opt-in edge-detection V2 set
+# Pool the chosen raw edge samples of ALL measured frames into one TLS fit per
+# edge (~11x the data; droplet/locus jitter averages out). Reported ALONGSIDE
+# the per-frame angles (pooled_angle result key + CSV summary row), never
+# replacing them. Pure addition; flag exists only as an emergency off-switch.
+POOLED_FIT = True
 CONF_HIGH = 75             # score >= this  -> High
 CONF_MEDIUM = 50           # score >= this  -> Medium, else Low
 CONF_COLORS = {            # BGR text color per confidence level
@@ -685,6 +690,8 @@ def measure_frame(gray, bg=None, start_x=None, end_x=None, line_frac=None):
         "lo0": np.array([xa, k_lo * xa + b_lo]),
         "lo1": np.array([xb, k_lo * xb + b_lo]),
         "edges": (xs, y_top_s, y_bot_s),
+        "raw_roi": (xr.astype(float), y_top[roi].astype(float),
+                    y_bot[roi].astype(float)),
         "edge_conf_upper": float(np.mean(top_cands["conf"][roi]))
                            if top_cands["conf"] is not None else 1.0,
         "edge_conf_lower": float(np.mean(bot_cands["conf"][roi]))
@@ -825,6 +832,22 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
 
     angles = [r["angle"] for _, _, r in measured]
     angle_std = float(np.std(angles, ddof=1)) if len(angles) > 1 else 0.0
+    # Pooled fit: one TLS line per edge over every measured frame's chosen raw
+    # edge samples (the same steady jet), reported alongside the per-frame mean.
+    pooled_angle, pooled_n = float("nan"), 0
+    if POOLED_FIT:
+        px = np.concatenate([r["raw_roi"][0] for _, _, r in measured])
+        pu = np.concatenate([r["raw_roi"][1] for _, _, r in measured])
+        pl = np.concatenate([r["raw_roi"][2] for _, _, r in measured])
+        if px.size >= MIN_POINTS:
+            k_u, b_u, _, vx_u, vy_u = tls_fit(px, pu)
+            k_l, b_l, _, vx_l, vy_l = tls_fit(px, pl)
+            if blue_dir is not None:
+                pooled_angle = max(line_angle_deg(blue_dir, (vx_u, vy_u)),
+                                   line_angle_deg(blue_dir, (vx_l, vy_l)))
+            else:
+                pooled_angle = spray_angle(k_u, k_l)
+            pooled_n = int(px.size)
     # Trusted mean: drop Low-confidence frames (typically injection decay) so
     # they cannot drag the reported angle. Falls back to all frames if none pass.
     trusted = [r["angle"] for _, _, r in measured if r["confidence"] != "Low"]
@@ -855,6 +878,8 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
         fh.write(f"std,{angle_std:.3f},,,,,,,,,,,,\n")
         fh.write(f"trusted_mean,{trusted_mean:.2f},,,{len(trusted)},,,,,,,,,"
                  f"excl. Low frames\n")
+        fh.write(f"pooled_angle,{pooled_angle:.2f},,,{pooled_n},,,,,,,,,"
+                 f"all-frame fit\n")
         fh.write(f"run_confidence,{run_conf} ({run_score:.0f}),,,,,,,,,,,,\n")
 
     return {
@@ -868,6 +893,8 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
         "trusted_mean": trusted_mean,
         "trusted_std": trusted_std,
         "trusted_count": len(trusted),
+        "pooled_angle": pooled_angle,
+        "pooled_n": pooled_n,
         "run_quality": run_score,
         "confidence": run_conf,
         "frames": [(name, r["angle"]) for name, _, r in measured],
