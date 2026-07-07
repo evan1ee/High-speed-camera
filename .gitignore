@@ -13,3 +13,6 @@ __pycache__/
 # Runtime data: captures, injection images, measure output, calibration and
 # reference JSON. Machine-specific, often gigabytes - never committed.
 data/
+
+# Benchmark run outputs (regenerable; baseline.csv IS committed)
+benchmark/results/
