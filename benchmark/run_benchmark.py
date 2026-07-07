@@ -8,6 +8,7 @@ Two suites:
   seq    : make_sequence -> BMPs in a temp dir -> measure_folder  (pipeline)
 """
 import csv
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -31,9 +32,13 @@ SINGLE_CASES = [
     ("worst",        1.5, 1.5,  6.0, 3.0, 150),
 ]
 SEQ_CASES = [
-    # (name, residual_level, skirt)
-    ("seq_clean",    0,  0.0),
-    ("seq_residual", 60, 2.0),   # the background-leak scenario
+    # (name, residual_level, skirt, n_pre, n_jet)
+    ("seq_clean",    0,  0.0, 18, 12),
+    ("seq_residual", 60, 2.0, 18, 12),  # static residual streak in the bg
+    # Steady jet dominating the temporal median (the real rig's failure mode:
+    # subtraction erases the jet). Legacy cannot measure this at all (sentinel
+    # 99); a pre-onset background makes it measurable.
+    ("seq_steady",   60, 2.0, 10, 20),
 ]
 SEEDS = (0, 1, 2)
 
@@ -58,12 +63,8 @@ def run(tag):
     old_load_reference = ma.reference_lines.load_reference
     ma.reference_lines.load_reference = lambda: None
     try:
-        for name, residual, skirt in SEQ_CASES:
-            # Pre-frames must outnumber jet frames: the synthetic jet is
-            # perfectly static, so a jet-majority window would put the jet
-            # fully into the temporal median and subtraction would erase it
-            # (the real rig's jet jitters, so it only partially leaks).
-            frames, truth = make_sequence(n_pre=18, n_jet=12,
+        for name, residual, skirt, n_pre, n_jet in SEQ_CASES:
+            frames, truth = make_sequence(n_pre=n_pre, n_jet=n_jet,
                                           residual_level=residual,
                                           skirt_scale=skirt, seed=0)
             with tempfile.TemporaryDirectory() as td:
@@ -71,9 +72,20 @@ def run(tag):
                 src.mkdir()
                 for i, f in enumerate(frames):
                     cv2.imwrite(str(src / f"frame_{i:06d}.bmp"), f)
-                out = ma.measure_folder(src, dest_base=Path(td) / "measure",
-                                        start=3, end=10,
-                                        start_x=truth["x_lo"], end_x=truth["x_hi"])
+                (src / "injection_meta.json").write_text(json.dumps(
+                    {"pre_frames": n_pre, "onset_index": n_pre, "copy_start": 0,
+                     "copy_end": len(frames) - 1, "method": "synthetic"}))
+                try:
+                    out = ma.measure_folder(src, dest_base=Path(td) / "measure",
+                                            start=3, end=10,
+                                            start_x=truth["x_lo"], end_x=truth["x_hi"])
+                except RuntimeError:
+                    # No measurable jet (e.g. the steady jet leaked fully into
+                    # the window median): worst-possible sentinel scores.
+                    rows.append({"suite": "seq", "case": name, "seed": 0,
+                                 "ang_err_up": 99.0, "ang_err_lo": 99.0,
+                                 "dist_up": 99.0, "dist_lo": 99.0})
+                    continue
                 # Rescore each measured frame against the truth via a re-measure of
                 # the mean: use the folder's per-frame results indirectly through
                 # the returned mean angle vs the true full angle.

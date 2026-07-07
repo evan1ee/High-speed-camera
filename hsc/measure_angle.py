@@ -23,6 +23,7 @@ image the pipeline runs directly on the grayscale.
 """
 
 import argparse
+import json
 from math import atan, atan2, degrees
 from pathlib import Path
 
@@ -72,6 +73,17 @@ EDGE_BAND_MAX = 12         # cap the outward extension (px) per side
 EDGE_VISIBLE_FRAC = 0.25
 EDGE_REFINE_SPAN = 3       # px beyond the gradient peak to search for the crossing
 EDGE_PICK_TOL = 1.10       # visible locus wins unless grad is >10% straighter
+
+# ---- Background construction ----------------------------------------------
+# "window"   : temporal median over the whole injection window (legacy). When
+#              the jet is steady it leaks into the median and subtraction clips
+#              the bright-side edge ramp (the EDGE_BAND_* walk-out compensates).
+# "pre-onset": median over ONLY the jet-free padding frames at the folder start
+#              (count from injection_meta.json, written by injection_extract),
+#              so the background never contains the jet. Falls back to "window"
+#              when the meta file is absent or too few pre-frames exist.
+BG_MODE = "window"           # part of the opt-in edge-detection V2 set
+BG_MIN_PRE_FRAMES = 8        # need at least this many jet-free frames
 
 NOZZLE_SIDE = +1           # +1: nozzle on the right of the frame, -1: left
 NOZZLE_SKIP = 14           # exclude this many px next to the nozzle (origin)
@@ -145,6 +157,21 @@ def compute_background(files, sample=80):
     """Per-pixel temporal median over a sampling of frames (static scene)."""
     idx = np.linspace(0, len(files) - 1, min(sample, len(files))).astype(int)
     stack = np.stack([load_gray(files[i]) for i in idx])
+    return np.median(stack, axis=0).astype(np.int16)
+
+
+def _pre_onset_background(files, source_dir):
+    """Median background from the jet-free head of an injection folder, using
+    injection_meta.json's pre_frames count. None if unavailable/insufficient."""
+    meta_path = Path(source_dir) / "injection_meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        pre = int(meta["pre_frames"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if pre < BG_MIN_PRE_FRAMES or pre > len(files):
+        return None
+    stack = np.stack([load_gray(f) for f in files[:pre]])
     return np.median(stack, axis=0).astype(np.int16)
 
 
@@ -579,7 +606,11 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
     start = max(1, start)
     end = max(start, end)
 
-    bg = compute_background(files)
+    bg = None
+    if BG_MODE == "pre-onset":
+        bg = _pre_onset_background(files, source_dir)
+    if bg is None:
+        bg = compute_background(files)
 
     if dest_base is None:
         parents = source_dir.parents

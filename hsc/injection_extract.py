@@ -32,6 +32,7 @@ back-ends are tried in order, all producing the *same* signal:
 """
 
 import argparse
+import json
 import os
 import shutil
 import struct
@@ -476,6 +477,20 @@ def build_result(
         dest_dir.mkdir(parents=True, exist_ok=True)
         for src in selected:
             shutil.copy2(src, dest_dir / src.name)
+        # Record where the jet-free head ends so measure_angle can build a
+        # pre-onset background (BG_MODE="pre-onset") without the jet in it.
+        meta = {
+            "pre_frames": int(start - copy_start),
+            "onset_index": int(start),
+            "copy_start": int(copy_start),
+            "copy_end": int(copy_end),
+            "method": str(method),
+        }
+        try:
+            (dest_dir / "injection_meta.json").write_text(
+                json.dumps(meta, indent=2), encoding="utf-8")
+        except OSError:
+            pass    # metadata is an optimization, never a failure
 
     return {
         "source_dir": str(source_dir),

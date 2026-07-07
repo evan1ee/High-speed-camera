@@ -25,4 +25,5 @@ single,worst,1,0.0209,0.0430,1.7705,2.3357
 single,worst,2,0.0224,0.0588,1.7757,0.5472
 seq,seq_clean,0,0.0157,0.0157,0.0034,0.0034
 seq,seq_residual,0,0.0345,0.0345,0.0088,0.0088
-summary,mean_ang_err,,0.0175,,0.0588,worst
+seq,seq_steady,0,99.0000,99.0000,99.0000,99.0000
+summary,mean_ang_err,,3.6835,,99.0000,worst
