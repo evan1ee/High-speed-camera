@@ -68,6 +68,15 @@ uv run python run_gui.py
 Buttons: **Stop Preview**, **Capture**, **Stop** (abort), **Find Injection** (re-run on any
 folder), **Measure** (pick a folder to measure), **Open Last Folder**.
 
+**Smart save** (checkbox, default **off**): detect the injection in RAM *before* saving and
+write only the `before..after` window straight to `data\injection images\<run>\` (plus an
+`injection_meta.json`), skipping the full-burst write to `data\captures\`. If no injection is
+detected the full burst is saved to `data\captures\<run>\` as usual (unchanged legacy path).
+This shortens the post-capture wait by not writing thousands of frames just to copy a few
+hundred back out. Validate the decision on your own recorded bursts before enabling:
+`uv run python -m hsc.smart_save "data\captures\<run>" --compare` should report `IDENTICAL`
+(the same window the legacy extractor picks).
+
 ---
 
 ## How it works
