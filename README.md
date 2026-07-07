@@ -18,7 +18,7 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 | File | Purpose |
 |------|---------|
 | `run_gui.py` | **Entry point** — launches the GUI (`uv run python run_gui.py`); also the PyInstaller entry. |
-| `hsc/capture_gui.py` | **Main app.** Tkinter GUI: live preview, instant capture, auto find-injection, auto measure. |
+| `hsc/gui/` | **Main app.** Tkinter GUI package (one module per feature): live preview, instant capture, auto find-injection, auto measure. `hsc/capture_gui.py` is a compatibility shim. |
 | `hsc/capture_image.py` | Low-level camera capture (IMV SDK). Also a standalone CLI. |
 | `hsc/injection_extract.py` | Finds the injection event in a long burst and copies the relevant frames out. |
 | `native/injection_scan.cpp` / `vendor/bin/injection_scan.exe` | Fast C++/OpenMP motion scanner used by `injection_extract` (optional; Python fallback exists). |

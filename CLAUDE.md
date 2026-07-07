@@ -13,12 +13,22 @@ Capture button.
 
 ## Module map
 
-- **`hsc/capture_gui.py`** — Tkinter GUI, the entry point (`uv run python run_gui.py`). Owns one
-  persistent camera worker thread that does the live preview AND the burst capture on the
-  *same already-open camera* (so Capture is instant). After a capture it chains:
+- **`hsc/gui/`** — Tkinter GUI package, the entry point (`uv run python run_gui.py`;
+  `hsc/capture_gui.py` is a thin compatibility shim re-exporting `CaptureGui`/`main`).
+  `CaptureGui` (in `gui/app.py`) is assembled from one mixin per feature area:
+  `layout.py` (widgets), `capture.py` (preview/Capture UI side + the still-request
+  registry), `camera_worker.py` (the persistent camera thread: live preview AND burst
+  capture on the *same already-open camera*, so Capture is instant), `extraction.py`
+  (Find Injection), `measurement.py` (Measure + Measure Angle Block), `video.py`
+  (Make Video), `calibration.py` (Calibrate Scale / Auto Calibrate / Measure Block),
+  `reference.py` (Set Reference), `config.py` (shared folders + `log_to_file`),
+  `selftest.py` (headless `--selftest`). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto make slow-motion video → auto measure`.
   Threads talk to the UI via
-  `output_queue` / `preview_queue` drained by `after()` callbacks. `_append_log` mirrors
+  `output_queue` / `preview_queue` drained by `after()` callbacks; each mixin declares a
+  `QUEUE_HANDLERS` dict (message kind → handler method) merged by
+  `app._collect_queue_handlers` — the recipe for adding a new feature module is in the
+  `gui/app.py` docstring. `_append_log` mirrors
   every message (timestamped) to `data_root()/app.log` (the frozen build is windowed, so
   that file is the only persistent record); `report_callback_exception` also logs uncaught
   Tk callback tracebacks there. Buttons: Stop Preview,
@@ -85,7 +95,7 @@ Capture button.
   `<sys._MEIPASS>/vendor` when frozen (PyInstaller). `data_root()` (user output:
   captures/injection images/measure, calibration/reference JSON) returns `<root>/data` from
   source (created on demand), the .exe folder when frozen. Used by `capture_image`
-  (SDK/Runtime), `injection_extract` (scan exe), `capture_gui`.
+  (SDK/Runtime), `injection_extract` (scan exe), `hsc/gui`.
 
 ## Packaging (Windows .exe)
 
@@ -190,12 +200,13 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 - All three motion back-ends must produce the **same** signal — verify equality if you touch them.
 - Don't break the GUI contracts: `measure_folder(source, dest_base, start, end, progress)` and
   `injection_extract.detect_bounds_with_presence(...)` / `build_result(...)` are called by
-  `hsc/capture_gui.py`.
+  `hsc/gui/` (measurement.py, extraction.py, camera_worker.py).
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (17 tests: import smoke, synthetic wedge, calibration load,
-  vendor layout, data root). Compile check: `uv run python -m py_compile hsc/*.py run_gui.py`.
+- Tests: `uv run python -m pytest` (41 tests: import smoke, GUI wiring/dispatch, synthetic wedge,
+  calibration load, vendor layout, data root). Compile check:
+  `uv run python -m py_compile hsc/*.py hsc/gui/*.py run_gui.py`.
 - Measurement: run `uv run python -m hsc.measure_angle` on an existing `data\injection images\<run>`
   folder; render a
   saved frame (native 320×240 by default; raise `MEASURE_RENDER_SCALE` for a zoomable 960×720)
