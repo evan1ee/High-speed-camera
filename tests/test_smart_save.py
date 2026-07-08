@@ -1,6 +1,5 @@
 """smart_save: window planning must match build_result's math exactly."""
 import numpy as np
-import pytest
 
 from hsc import injection_extract, smart_save
 
