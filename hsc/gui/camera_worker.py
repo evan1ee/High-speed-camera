@@ -215,12 +215,14 @@ class CameraWorkerMixin:
                             dest_dir, params.prefix, i + 1, suffix).name
                         for i in range(len(cloned_frames))
                     ]
+                    # Meta first, so a mid-write disk failure still leaves a
+                    # self-describing partial folder.
+                    smart_save.write_meta(dest_dir, bounds, window,
+                                          "in-memory (smart save)")
                     for i in range(window[0], window[1] + 1):
                         capture_image.save_frame(
                             cam, cloned_frames[i], dest_dir / names[i], sdk)
                         saved += 1
-                    smart_save.write_meta(dest_dir, bounds, window,
-                                          "in-memory (smart save)")
                     extract_result = smart_save.make_result(
                         names, motion_signal, bounds, window,
                         source_dir=str(output_dir), dest_dir=str(dest_dir),
@@ -231,10 +233,11 @@ class CameraWorkerMixin:
                         f"Smart save: kept {saved} of {captured} frames "
                         f"-> {dest_dir} in {save_elapsed:.3f}s\n"
                     )
-                    try:                     # captures run dir stays empty
-                        output_dir.rmdir()
-                    except OSError:
-                        pass
+                    if params.timestamp_dir:
+                        try:                 # captures run dir stays empty
+                            output_dir.rmdir()
+                        except OSError:
+                            pass
                 else:
                     if smart:
                         self.output_queue.put(
