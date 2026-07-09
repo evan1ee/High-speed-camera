@@ -47,6 +47,7 @@ class CaptureMixin:
         self.output_dir_var = tk.StringVar(value=str(ROOT / "captures"))
         self.ext_var = tk.StringVar(value=".bmp")
         self.defer_save_var = tk.BooleanVar(value=True)
+        self.smart_save_var = tk.BooleanVar(value=False)
         self.timestamp_dir_var = tk.BooleanVar(value=True)
         self.no_save_var = tk.BooleanVar(value=False)
         self.before_var = tk.StringVar(value="30")
@@ -117,6 +118,7 @@ class CaptureMixin:
             duration=duration,
             no_save=self.no_save_var.get(),
             defer_save=self.defer_save_var.get(),
+            smart_save=self.smart_save_var.get(),
             timestamp_dir=self.timestamp_dir_var.get(),
             aspect=self.aspect_var.get(),
             width=width,
@@ -208,7 +210,11 @@ class CaptureMixin:
         # make the slow-motion video, then measure the spray angle.
         if not (self.capture_params and self.capture_params.no_save):
             self.auto_measure_pending = True
-            if info.get("bounds") is not None and info.get("signal"):
+            if info.get("extract_result") is not None:
+                # Smart save already wrote the injection window;
+                # skip straight to the video+measure chain.
+                self._on_extract_done(info["extract_result"])
+            elif info.get("bounds") is not None and info.get("signal"):
                 # Bounds were computed in RAM during the save phase;
                 # just copy the window (no disk read-back).
                 self._auto_copy_injection(info)

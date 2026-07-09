@@ -24,6 +24,15 @@ Capture button.
   `reference.py` (Set Reference), `config.py` (shared folders + `log_to_file`),
   `selftest.py` (headless `--selftest`). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto make slow-motion video → auto measure`.
+  A **"Smart save"** checkbox (default OFF; variable + `smart_save` param in `capture.py`,
+  widget in `layout.py`) routes `camera_worker._do_capture` through a *detect-before-write*
+  branch: pass A computes the motion signal in RAM, `smart_save.plan_window` detects the
+  window, then it writes ONLY the `before..after` frames directly into
+  `data\injection images\<run>` (+ `injection_meta.json`, guarded rmdir of the empty
+  captures dir) and puts a ready `extract_result` in the CAPTURE_DONE payload — `capture.py`
+  `_on_capture_done` dispatches that straight to `_on_extract_done`, **short-circuiting** the
+  find-injection step (video → measure chain unchanged). No injection detected / checkbox off
+  ⇒ the full burst is saved to `data\captures\<run>` exactly as before.
   Threads talk to the UI via
   `output_queue` / `preview_queue` drained by `after()` callbacks; each mixin declares a
   `QUEUE_HANDLERS` dict (message kind → handler method) merged by
@@ -41,6 +50,14 @@ Capture button.
   (disk) and `build_result` + `detect_bounds_with_presence` (used by the GUI's in-memory path).
   Motion-signal back-ends: `scan_with_cpp` → `compute_motion_signal_raw` → `compute_motion_signal`
   (PIL). Onset from temporal diff; end from a jet-presence signal (downsampled).
+- **`hsc/smart_save.py`** — pure planning for the GUI's "Smart save" detect-before-write path
+  (no SDK/Tk imports, unit-testable headless). `plan_window` wraps the unchanged
+  `detect_bounds_with_presence` and returns `(bounds, (copy_start, copy_end))` using
+  `build_result`'s clamp math (`(None, None)` ⇒ no injection, caller does a full legacy save);
+  `make_result` builds the exact `build_result` key set so `_on_extract_done` consumes it
+  unchanged; `make_meta`/`write_meta` emit `injection_meta.json`. `replay(source_dir)` +
+  CLI `uv run python -m hsc.smart_save "data\captures\<run>" --compare` re-run the decision on
+  an existing burst and diff it against the legacy extractor (validation: should say IDENTICAL).
 - **`native/injection_scan.cpp` / `vendor/bin/injection_scan.exe`** — C++/OpenMP scanner that
   returns the temporal motion signal as int32 stdout. Built statically via
   `native/build_injection_scan.bat` (MinGW g++; outputs to `vendor\bin\`). Optional:
@@ -115,7 +132,10 @@ All user output lives under `data\` (gitignored), via `data_root()`:
 
 - `data\captures\<timestamp>_<aspect>\frame_000001.bmp …` — raw burst (one folder per run).
 - `data\injection images\<run>\…` — extracted injection window (`copy_start … copy_end`); the
-  "Make Video" button also writes `slowmo.mp4` here.
+  "Make Video" button also writes `slowmo.mp4` here. With **Smart save** enabled and an
+  injection detected, the run folder is created **directly here** (with `injection_meta.json`)
+  and `data\captures\` receives nothing for that run; with Smart save off, or when no injection
+  is detected, the full burst still lands in `data\captures\` first as below.
 - `data\measure\<run>\…` + `angles.csv` — annotated angle images and report.
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
