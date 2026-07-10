@@ -65,8 +65,9 @@ uv run python run_gui.py
    injection** and **auto-measures** the spray angle.
 4. Results land in `data\injection images\<run>\` and `data\measure\<run>\`. Use **Open Last Folder**.
 
-Buttons: **Stop Preview**, **Capture**, **Stop** (abort), **Find Injection** (re-run on any
-folder), **Measure** (pick a folder to measure), **Open Last Folder**.
+Buttons: **Stop Preview**, **Capture**, **Stop** (abort), **Start Monitoring** (continuous
+auto-capture — see *Monitor mode* below), **Find Injection** (re-run on any folder),
+**Measure** (pick a folder to measure), **Open Last Folder**.
 
 **Smart save** (checkbox, default **off**): detect the injection in RAM *before* saving and
 write only the `before..after` window straight to `data\injection images\<run>\` (plus an
@@ -76,6 +77,37 @@ This shortens the post-capture wait by not writing thousands of frames just to c
 hundred back out. Validate the decision on your own recorded bursts before enabling:
 `uv run python -m hsc.smart_save "data\captures\<run>" --compare` should report `IDENTICAL`
 (the same window the legacy extractor picks).
+
+## Monitor mode (continuous multi-injection capture)
+
+Click **Start Monitoring** and the camera streams continuously: every injection is detected
+**online** (`hsc/monitor.py`), saved by a background writer to its own
+`data\injection images\monitor_<stamp>_<WxH>\` folder (with `injection_meta.json`; nothing is
+written to `data\captures\`), and then **auto-measured** — one event at a time, in order, even
+if you fire the next injection while the previous one is still processing. No slow-motion
+video is made in monitor mode (use the Make Video button on a folder if you want one). A
+typical saved event is ~150–300 frames (`before` + jet + `after`). Click **Stop Monitoring**
+to finish; an event in progress at that moment is closed, saved, and processed like any other.
+While monitoring, the camera-owning buttons (Capture, Calibrate Scale, Auto Calibrate, Measure
+Block, Measure Angle Block, Set Reference) are disabled; the live preview stays on.
+
+How detection works (calibrated on-rig 2026-07-10): an event **triggers** when one frame
+changes > `MON_TRIGGER` (300) pixels; it **ends** when the changed-pixel count stays quiet
+(≤ `max(30, 0.005 × event peak)`) for `MON_END_HOLD` (60) consecutive frames — a flowing jet
+changes hundreds–thousands of pixels per frame, a wet-but-still scene ~0–25; and at close the
+event is **validated**: a peak below `MON_MIN_PEAK` (3000) pixels is a drip/mist disturbance
+and is ignored (logged, not saved). Real injections on this rig peak at 6k–55k changed pixels,
+junk at ≤760.
+
+Camera-safety note: continuous streaming is the sensor's normal duty cycle — the live preview
+already streams continuously and there is no mechanical shutter. Sustained max-FPS streaming
+just runs the camera warm (which adds a little image noise), so keep it ventilated.
+
+Validate the online detector against the offline one on your own recorded bursts:
+
+```bash
+uv run python -m hsc.monitor "data\captures\<run>" --compare   # expect: OK
+```
 
 ---
 

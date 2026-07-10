@@ -302,6 +302,9 @@ class CaptureMixin:
                             req.event.clear()
                             for name in req.buttons:
                                 getattr(self, name).configure(state=tk.NORMAL)
+                    # Monitoring cannot continue without the camera; return
+                    # the toggle + camera buttons to idle (idempotent).
+                    self._reset_monitor_ui()
 
         except queue.Empty:
             pass

@@ -198,10 +198,16 @@ class MeasurementMixin:
     def _maybe_auto_video_after_measure(self):
         """In the capture pipeline, make the slow-motion video once
         measurement is done. A no-op for manual Measure clicks
-        (auto_measure_pending is False)."""
-        if self.auto_measure_pending:
-            self.auto_measure_pending = False
-            self._make_video(self.last_injection_dir)
+        (auto_measure_pending is False). Monitor-mode events skip the video
+        (not wanted there) and pump the next queued event instead."""
+        if not self.auto_measure_pending:
+            return
+        self.auto_measure_pending = False
+        if self._monitor_chain_active:
+            self._monitor_chain_active = False
+            self._pump_monitor_chain()
+            return
+        self._make_video(self.last_injection_dir)
 
     # ------------------------------------------------------------------
     # Angle-block measurement (single still)

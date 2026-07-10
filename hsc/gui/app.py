@@ -25,6 +25,7 @@ from hsc.gui.config import log_to_file
 from hsc.gui.extraction import ExtractionMixin
 from hsc.gui.layout import LayoutMixin
 from hsc.gui.measurement import MeasurementMixin
+from hsc.gui.monitor import MonitorMixin
 from hsc.gui.reference import ReferenceMixin
 from hsc.gui.video import VideoMixin
 
@@ -35,6 +36,7 @@ class CaptureGui(
     CameraWorkerMixin,
     ExtractionMixin,
     MeasurementMixin,
+    MonitorMixin,
     VideoMixin,
     CalibrationMixin,
     ReferenceMixin,
@@ -63,6 +65,7 @@ class CaptureGui(
         # Per-feature state (attributes + Tk variables). Capture goes first:
         # it owns the still-request registry the other features register with.
         self._init_capture_state()
+        self._init_monitor_state()
         self._init_extraction_state()
         self._init_measurement_state()
         self._init_video_state()

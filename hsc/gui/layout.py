@@ -103,6 +103,9 @@ class LayoutMixin:
         self.preview_button = ttk.Button(actions, text="Stop Preview", command=self._toggle_preview)
         self.run_button = ttk.Button(actions, text="Capture", command=self._run_capture)
         self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_capture, state=tk.DISABLED)
+        self.monitor_button = ttk.Button(
+            actions, text="Start Monitoring", command=self._toggle_monitor
+        )
         self.extract_button = ttk.Button(
             actions, text="Find Injection", command=self._find_injection
         )
@@ -132,6 +135,7 @@ class LayoutMixin:
 
         buttons = (
             self.preview_button, self.run_button, self.stop_button,
+            self.monitor_button,
             self.extract_button, self.measure_button, self.video_button,
             self.scale_button, self.autoscale_button, self.measblock_button,
             self.block_button, self.reference_button, self.open_button,

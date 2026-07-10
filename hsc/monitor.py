@@ -3,18 +3,41 @@
 
 """Online (streaming) injection detection for Monitor mode.
 
-The engine is fed one frame at a time and finds injection events with the
-SAME numbers the offline detector uses: the per-frame changed-pixel count
-(``DIFF_THRESH``) triggers at ``detect_bounds_with_presence``'s ``min_peak``,
-the onset is refined by the same walk-left, and the end uses the same
-downsampled jet-presence measurement. The one online-specific criterion is
-the end rule: offline knows the post-jet trough in advance; online we declare
-the end when the smoothed presence falls below ``MON_END_FRAC`` of the
-event's own presence peak and stays there for ``END_HOLD`` frames. The
-replay harness (``uv run python -m hsc.monitor <burst> --compare``)
-validates this against the offline detector on real bursts.
+The engine is fed one frame at a time and finds injection events from the
+same per-frame changed-pixel count the offline detector uses (its
+``DIFF_THRESH`` / ``min_peak`` numbers). An event triggers when the count
+exceeds ``MON_TRIGGER``; the onset is refined by the offline walk-left; the
+end fires when the count stays *quiet* -- at or below
+``max(MON_END_ABS, MON_END_FRAC x event peak)`` (the offline walk's own
+thresholds) -- for ``MON_END_HOLD`` consecutive frames.
+
+Design notes from the 2026-07-10 on-rig session (root-cause of v1's failure):
+
+* No presence-vs-background end rule. The first version compared each frame
+  against a pre-trigger background median (like the offline end detector),
+  but ONLINE that background is unfixably stale: the injection wets/mists the
+  scene, every later frame differs from the dry background forever, and the
+  end never fired (every event ran into the runaway cap). The offline
+  detector escapes this only because it can scan ahead and set its threshold
+  from the post-jet trough. The temporal signal needs no background: on this
+  rig an active jet changes hundreds..thousands of pixels per frame while the
+  wet-but-static scene changes ~0-25, measured on the saved runaway events.
+* ``MON_END_HOLD`` is much longer than the offline walk's ``gap`` (5) because
+  the burst phase has brief lulls (a 25-frame quiet stretch occurred inside a
+  real injection) that a short hold would mistake for the end.
+* ``MON_MIN_PEAK`` validation at close: drips/mist also trip the 300-pixel
+  trigger, but real injections peak at 6k..55k changed pixels (measured over
+  25 recorded bursts) while the junk events peaked at <=760. Events whose
+  peak stays below ``MON_MIN_PEAK`` are returned with ``discarded`` set and
+  must not be saved.
+* Detection watches only the left ``MON_DETECT_FRAC`` (2/3) of the columns:
+  the nozzle is at the right edge and gets removed/reinstalled between
+  injections while monitoring runs -- that hand/tool churn must not trigger.
+  Saved frames are always the full width.
 
 Pure NumPy -- no SDK, no Tk -- so every path is unit-testable headless.
+Validation tool: ``uv run python -m hsc.monitor <burst> --compare`` replays a
+recorded burst and checks the online events against the offline detector.
 """
 
 from collections import deque
@@ -23,23 +46,43 @@ import numpy as np
 
 from hsc import injection_extract as ie
 
-# Trigger = the offline detector's min_peak (an injection exists only if some
+# Trigger = the offline detector's min_peak floor (an event starts when one
 # frame changes at least this many full-resolution pixels).
 MON_TRIGGER = 300.0
-# Online end rule: presence has dropped for good when its moving average falls
-# below this fraction of the event's presence peak (validated by replay).
-MON_END_FRAC = 0.25
-MON_END_ABS = 2.0            # ...or below this absolute count, whichever is larger
+# A closed event is real only if some frame changed at least this many pixels:
+# junk (drips/mist) peaked <=760, the weakest real injection 5977 (data above).
+MON_MIN_PEAK = 3000.0
+# Online end rule: the jet is over when the changed-pixel count stays at or
+# below max(MON_END_ABS, MON_END_FRAC * event peak) -- the same abs_floor /
+# frac numbers the offline walk uses -- for MON_END_HOLD consecutive frames.
+MON_END_ABS = 30.0
+MON_END_FRAC = 0.005
+MON_END_HOLD = 60
+# The decaying jet tail stays faintly VISIBLE for a couple dozen frames after
+# it stops changing pixels (offline presence-end lags the motion-quiet point
+# by 24-27 frames on real bursts), so the recorded end is pushed this far into
+# the quiet hold. The frames already sit in RAM (MON_END_HOLD > margin).
+MON_END_MARGIN = 30
+# Only the left fraction of the columns feeds detection: the nozzle sits at
+# the RIGHT edge and is removed/reinstalled between injections while
+# monitoring runs, churning pixels there. The jet spans leftward across the
+# frame, so cropping to 2/3 keeps real peaks (6k..55k full-frame) comfortably
+# above MON_MIN_PEAK. Full frames are still recorded and saved.
+MON_DETECT_FRAC = 2.0 / 3.0
 
 
 class MonitorEngine:
     """Streaming state machine: armed -> recording -> padding -> armed."""
 
     def __init__(self, before=30, after=30, trigger=None,
-                 max_event_frames=3000, walkback=60):
+                 max_event_frames=600, walkback=60, min_peak=None,
+                 detect_frac=None):
         self.before = int(before)
         self.after = int(after)
         self.trigger = float(MON_TRIGGER if trigger is None else trigger)
+        self.min_peak = float(MON_MIN_PEAK if min_peak is None else min_peak)
+        self.detect_frac = float(
+            MON_DETECT_FRAC if detect_frac is None else detect_frac)
         self.max_event_frames = int(max_event_frames)
         self.walkback = int(walkback)
         keep = self.before + self.walkback
@@ -48,21 +91,29 @@ class MonitorEngine:
         self._prev = None                        # previous frame as int16
         self._fed = 0
         self._events = 0
+        self._discarded = 0
         self._state = "armed"
         self._reset_event()
 
     # -- public ------------------------------------------------------------
     @property
     def stats(self):
-        return {"fed": self._fed, "events": self._events, "state": self._state}
+        return {"fed": self._fed, "events": self._events,
+                "discarded": self._discarded, "state": self._state}
 
     def feed(self, frame_u8):
-        """Feed one grayscale frame; returns a MonitorEvent dict when one closes."""
+        """Feed one grayscale frame; returns a MonitorEvent dict when one closes.
+
+        A closed event with a non-empty ``discarded`` field failed the
+        ``min_peak`` validation (drip/mist trigger) and must not be saved.
+        """
         frame_u8 = np.ascontiguousarray(frame_u8, dtype=np.uint8)
         pixels = frame_u8.astype(np.int16)
         if self._prev is not None and self._prev.shape == pixels.shape:
+            w_det = max(1, int(round(pixels.shape[1] * self.detect_frac)))
             count = float(np.count_nonzero(
-                np.abs(pixels - self._prev) > ie.DIFF_THRESH))
+                np.abs(pixels[:, :w_det] - self._prev[:, :w_det])
+                > ie.DIFF_THRESH))
         else:
             count = 0.0
         self._prev = pixels
@@ -81,17 +132,24 @@ class MonitorEngine:
         self._ev_signal.append(count)
 
         if self._state == "recording":
-            self._update_presence(frame_u8)
+            self._ev_peak = max(self._ev_peak, count)
+            self._update_quiet(count)
             if len(self._ev_frames) >= self.max_event_frames:
                 self._end_idx = len(self._ev_frames) - 1
                 self._dropped_note = (
                     f"runaway cap: event truncated at {self.max_event_frames} frames")
-                self._state = "padding"
-            elif self._presence_ended():
-                self._end_idx = self._end_at
-                self._state = "padding"
-            if self._state == "padding" and self.after == 0:
+            elif self._quiet_run >= MON_END_HOLD and self._end_at is not None:
+                self._end_idx = min(len(self._ev_frames) - 1,
+                                    self._end_at + MON_END_MARGIN)
+            if self._end_idx is None:
+                return None
+            # End found: the quiet-hold tail may already cover the `after`
+            # padding; otherwise keep collecting in the padding state.
+            tail = len(self._ev_frames) - 1 - self._end_idx
+            if tail >= self.after:
                 return self._close_event()
+            self._state = "padding"
+            self._pad_got = tail
             return None
 
         # padding
@@ -115,11 +173,8 @@ class MonitorEngine:
         self._ev_frames = []
         self._ev_signal = []
         self._first_ev_fed = 0        # global index (0-based) of first event frame
-        self._bg = None
-        self._mask = None
-        self._presence = deque(maxlen=ie.END_SMOOTH_WIN)
-        self._presence_max = 0.0
-        self._low_run = 0
+        self._ev_peak = 0.0
+        self._quiet_run = 0
         self._end_idx = None
         self._end_at = None
         self._pad_got = 0
@@ -134,39 +189,18 @@ class MonitorEngine:
         self._first_ev_fed = self._fed - 1            # this frame, 0-based
         self._ev_frames = [frame_u8]
         self._ev_signal = [count]
-        ds = ie.DOWNSAMPLE
-        if self._pre_frames:
-            stack = np.stack([f[::ds, ::ds].astype(np.int16)
-                              for f in self._pre_frames])
-            self._bg = np.median(stack, axis=0)
-        else:
-            self._bg = np.zeros_like(frame_u8[::ds, ::ds], dtype=np.float64)
-        small = frame_u8[::ds, ::ds].astype(np.int16)
-        self._mask = np.abs(small - self._bg) > ie.MASK_DIFF
-        if int(self._mask.sum()) < 10:                # degenerate: whole frame
-            self._mask = np.ones_like(self._mask)
+        self._ev_peak = count
         self._state = "recording"
-        self._update_presence(frame_u8)
 
-    def _update_presence(self, frame_u8):
-        ds = ie.DOWNSAMPLE
-        small = frame_u8[::ds, ::ds].astype(np.int16)
-        p = float(np.count_nonzero(
-            (np.abs(small - self._bg) > ie.PRESENCE_DIFF) & self._mask))
-        self._presence.append(p)
-        smooth = float(np.mean(self._presence))
-        self._presence_max = max(self._presence_max, smooth)
-        low = smooth <= max(MON_END_ABS, MON_END_FRAC * self._presence_max)
-        if low and len(self._ev_frames) > ie.END_MIN_GAP:
-            self._low_run += 1
-            if self._low_run == 1:
+    def _update_quiet(self, count):
+        quiet = count <= max(MON_END_ABS, MON_END_FRAC * self._ev_peak)
+        if quiet and len(self._ev_frames) > ie.END_MIN_GAP:
+            self._quiet_run += 1
+            if self._quiet_run == 1:
                 self._end_at = len(self._ev_frames) - 1
         else:
-            self._low_run = 0
+            self._quiet_run = 0
             self._end_at = None
-
-    def _presence_ended(self):
-        return self._low_run >= ie.END_HOLD and self._end_at is not None
 
     def _close_event(self):
         seq_frames = self._pre_frames + self._ev_frames
@@ -195,6 +229,10 @@ class MonitorEngine:
         # traceable to the monitoring timeline across events.
         first_seq_fed = self._first_ev_fed - n_pre
         seq_names = [f"frame_{first_seq_fed + k + 1:06d}.bmp" for k in range(n)]
+        discarded = ""
+        if self._ev_peak < self.min_peak:
+            discarded = (f"low peak: {self._ev_peak:.0f} changed px "
+                         f"< min_peak {self.min_peak:.0f} (drip/mist trigger)")
         event = {
             "frames": seq_frames[copy_start : copy_end + 1],
             "names": seq_names[copy_start : copy_end + 1],
@@ -204,10 +242,98 @@ class MonitorEngine:
             "window": (copy_start, copy_end),
             "fed_index": self._fed,
             "dropped_note": self._dropped_note,
+            "discarded": discarded,
         }
-        self._events += 1
+        if discarded:
+            self._discarded += 1
+        else:
+            self._events += 1
         self._state = "armed"
         self._reset_event()
         # The frame that closed the event is gone from the ring (it was an
         # event frame); the next armed frame re-seeds it naturally.
         return event
+
+
+def replay(source_dir, before=30, after=30, trigger=None, min_peak=None,
+           keep_discarded=False):
+    """Feed a recorded burst through a fresh engine; return the closed events.
+
+    Discarded (low-peak) events are dropped unless *keep_discarded* is set.
+    """
+    from hsc import measure_angle  # load_gray fast BMP path, no cv2 decode
+
+    files = ie.list_frames(source_dir)
+    if not files:
+        raise RuntimeError(f"No image frames found in {source_dir}")
+    eng = MonitorEngine(before=before, after=after, trigger=trigger,
+                        min_peak=min_peak)
+    events = []
+    for f in files:
+        ev = eng.feed(measure_angle.load_gray(f))
+        if ev:
+            events.append(ev)
+    tail = eng.flush()
+    if tail:
+        events.append(tail)
+    if not keep_discarded:
+        events = [ev for ev in events if not ev["discarded"]]
+    return events
+
+
+def _main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Replay Monitor-mode detection on a recorded burst.")
+    parser.add_argument("source")
+    parser.add_argument("--before", type=int, default=30)
+    parser.add_argument("--after", type=int, default=30)
+    parser.add_argument("--min-peak", type=float, default=None,
+                        help=f"validation threshold (default {MON_MIN_PEAK:.0f})")
+    parser.add_argument("--compare", action="store_true")
+    args = parser.parse_args()
+
+    events = replay(args.source, args.before, args.after,
+                    min_peak=args.min_peak, keep_discarded=True)
+    kept = [ev for ev in events if not ev["discarded"]]
+    print(f"{len(kept)} event(s) detected online"
+          + (f" (+{len(events) - len(kept)} discarded)" if len(events) != len(kept) else ""))
+    for k, ev in enumerate(events, 1):
+        extra = ""
+        if ev["dropped_note"]:
+            extra += f" [{ev['dropped_note']}]"
+        if ev["discarded"]:
+            extra += f" [DISCARDED: {ev['discarded']}]"
+        print(f"  event {k}: kept {ev['names'][0]} .. {ev['names'][-1]} "
+              f"({len(ev['names'])} frames){extra}")
+    if args.compare:
+        # Name-parsing note: [6:12] slices the six digits of frame_XXXXXX.bmp;
+        # keep the naming format in _close_event and this parse in sync.
+        files = ie.list_frames(args.source)
+        signal, _ = ie.compute_motion_signal_best(files)
+        getter = ie.raw_downsample_getter(files)
+        off = ie.detect_bounds_with_presence(np.asarray(signal), getter, len(files))
+        if off is None:
+            print("offline: no injection detected")
+            return
+        start, end, _ = off
+        print(f"offline: frames {files[start].name} .. {files[end].name}")
+        if kept:
+            # The offline detector reports exactly one window per burst; the
+            # gate passes when ANY kept online event's saved window covers the
+            # offline injection (start..end). The before-padding itself is not
+            # gated: a discarded pre-disturbance can legitimately sit there.
+            ok = any(
+                int(ev["names"][0][6:12]) - 1 <= start
+                and int(ev["names"][-1][6:12]) - 1 >= end
+                for ev in kept
+            )
+            print("OK: an online event covers the offline window" if ok
+                  else "MISMATCH: no online event covers the offline window")
+        else:
+            print("MISMATCH: offline found an injection, online kept none")
+
+
+if __name__ == "__main__":
+    _main()

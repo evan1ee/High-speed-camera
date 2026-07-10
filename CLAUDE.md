@@ -35,6 +35,19 @@ Capture button.
   `_on_capture_done` dispatches that straight to `_on_extract_done`, **short-circuiting** the
   find-injection step (measure → video chain unchanged). No injection detected / checkbox off
   ⇒ the full burst is saved to `data\captures\<run>` exactly as before.
+  A **"Start/Stop Monitoring"** toggle (`monitor.py` mixin + `camera_worker._do_monitor`)
+  runs continuous multi-injection capture: the grab loop feeds every frame to
+  `hsc.monitor.MonitorEngine` (online detection); a closed event with `discarded` set is only
+  logged (drip/mist trigger), otherwise it is written by a background
+  `hsc.frame_writer.EventWriter` directly to `data\injection images\monitor_<stamp>_<WxH>` and
+  its `make_result`-shaped payload is held by the UI until `MONITOR_SAVED` confirms the frames
+  are on disk, then queued in the `_monitor_chain` FIFO and pumped ONE event at a time through
+  the same `_on_extract_done` → measure chain (`_pump_monitor_chain`; **no video in monitor
+  mode** — `_monitor_chain_active` makes `_maybe_auto_video_after_measure` pump the next event
+  instead of `_make_video`). Stop mid-jet flushes and processes the
+  partial event; camera-owning buttons (`MONITOR_DISABLED_BUTTONS`) are disabled while
+  monitoring; the preview-queue `STOPPED` handler calls `_reset_monitor_ui()` (idempotent) so a
+  dying camera can't strand the toggle.
   Threads talk to the UI via
   `output_queue` / `preview_queue` drained by `after()` callbacks; each mixin declares a
   `QUEUE_HANDLERS` dict (message kind → handler method) merged by
@@ -43,8 +56,8 @@ Capture button.
   every message (timestamped) to `data_root()/app.log` (the frozen build is windowed, so
   that file is the only persistent record); `report_callback_exception` also logs uncaught
   Tk callback tracebacks there. Buttons: Stop Preview,
-  Capture, Stop, Find Injection, Measure, Measure Angle Block, Make Video, Calibrate Scale,
-  Auto Calibrate, Measure Block, Set Reference, Open Last Folder.
+  Capture, Stop, Start Monitoring, Find Injection, Measure, Measure Angle Block, Make Video,
+  Calibrate Scale, Auto Calibrate, Measure Block, Set Reference, Open Last Folder.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
@@ -60,6 +73,27 @@ Capture button.
   unchanged; `make_meta`/`write_meta` emit `injection_meta.json`. `replay(source_dir)` +
   CLI `uv run python -m hsc.smart_save "data\captures\<run>" --compare` re-run the decision on
   an existing burst and diff it against the legacy extractor (validation: should say IDENTICAL).
+- **`hsc/monitor.py`** — streaming (online) injection detection for Monitor mode.
+  `MonitorEngine(before, after, ...)` is a pure state machine (`armed → recording → padding →
+  armed`) fed one frame at a time via `feed()` (returns a closed event dict or None) with a
+  bounded pre-trigger ring buffer; `flush()` closes an in-flight event on Stop. Detection
+  watches only the **left `MON_DETECT_FRAC` (2/3) of the columns** (the nozzle at the right
+  edge is removed/reinstalled between injections while monitoring — that churn must not
+  trigger; saved frames are full width). Trigger =
+  temporal count > `MON_TRIGGER` (300); **end = the temporal signal stays quiet
+  (≤ max(`MON_END_ABS` 30, `MON_END_FRAC` 0.005 × event peak)) for `MON_END_HOLD` (60)
+  frames** — deliberately NO presence-vs-background end rule: online, the pre-trigger
+  background goes stale the moment the injection wets/mists the scene, presence then never
+  drops and every event runs into the cap (root-caused on-rig 2026-07-10; the offline detector
+  escapes only by thresholding off the post-jet trough it can scan ahead to). At close the
+  event is validated: peak < `MON_MIN_PEAK` (3000) ⇒ `discarded` set (drips/mist trip the
+  300-px trigger but real injections peak 6k–55k; junk ≤760 — measured). Validation tool:
+  `uv run python -m hsc.monitor "data\captures\<run>" --compare` replays a recorded burst and
+  checks that a kept online event's saved window covers the offline detector's window (`OK`).
+- **`hsc/frame_writer.py`** — `EventWriter`: background thread that writes a monitor event's
+  BMP frames with cv2 (no SDK) + `injection_meta.json`, then reports
+  `(dest_dir, ok, msg)` through a callback (→ `MONITOR_SAVED`); errors are reported, never
+  raised into the grab loop.
 - **`native/injection_scan.cpp` / `vendor/bin/injection_scan.exe`** — C++/OpenMP scanner that
   returns the temporal motion signal as int32 stdout. Built statically via
   `native/build_injection_scan.bat` (MinGW g++; outputs to `vendor\bin\`). Optional:
@@ -143,7 +177,9 @@ All user output lives under `data\` (gitignored), via `data_root()`:
   "Make Video" button also writes `slowmo.mp4` here. With **Smart save** enabled and an
   injection detected, the run folder is created **directly here** (with `injection_meta.json`)
   and `data\captures\` receives nothing for that run; with Smart save off, or when no injection
-  is detected, the full burst still lands in `data\captures\` first as below.
+  is detected, the full burst still lands in `data\captures\` first as below. **Monitor mode**
+  events also land directly here as `monitor_<stamp>_<WxH>\` (with `injection_meta.json`),
+  one folder per detected injection — nothing in `data\captures\`.
 - `data\measure\<run>\…` + `angles.csv` — annotated angle images and report.
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
@@ -260,7 +296,8 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (62 tests: import smoke, GUI wiring/dispatch, synthetic wedge,
+- Tests: `uv run python -m pytest` (104 tests: import smoke, GUI wiring/dispatch, monitor
+  engine/replay/wiring, frame writer, smart save, synthetic wedge,
   edge-detection V2 (erf/pre-onset/quality/pooled/toggle), calibration load, vendor layout,
   data root). Compile check:
   `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.

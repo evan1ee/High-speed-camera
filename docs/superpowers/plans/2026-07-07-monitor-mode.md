@@ -9,6 +9,21 @@
 > camera-owning buttons are disabled while monitoring; overlapping events are queued and
 > processed in order; Stop mid-jet saves AND processes the partial event.
 
+> **REVISION after the 2026-07-10 on-rig test** (3 injections fired → 9 events, all real ones
+> ran into the 3000-frame runaway cap): the presence-vs-background end rule in Task 1's code
+> below is **unfixable online** — the injection wets/mists the scene, so every later frame
+> differs from the pre-trigger background forever and the end never fires (the offline
+> detector escapes only by thresholding off the post-jet trough it can scan ahead to). The
+> implemented engine differs from the Task 1 listing: **end = temporal signal quiet
+> (≤ max(30, 0.005 × event peak)) for `MON_END_HOLD` (60) frames** (an active jet changes
+> hundreds–thousands of px/frame, the wet-but-still scene ~0–25 — measured on the saved
+> runaway folders), plus **`MON_MIN_PEAK` (3000) validation at close** (junk drip/mist events
+> peaked ≤760, real injections 6k–55k — events below it are returned `discarded`, logged, not
+> saved), `max_event_frames` default 600, and **no video step in the monitor chain** (user
+> request). `MON_END_FRAC` now means the signal-peak fraction (0.005), not a presence
+> fraction. Replaying the refined engine over the rig session's saved folders yields exactly
+> the real injections at 141–227 frames each, everything else discarded.
+
 **Goal:** A **Start Monitoring / Stop Monitoring** toggle: the camera streams continuously, every injection is detected online and saved automatically to its own `data\injection images\monitor_<stamp>` folder (then chained through measure + video), and the rig keeps waiting for the next injection — no Capture click per shot.
 
 **Architecture:** Three cleanly separated layers. (1) `hsc/monitor.py` — a pure, camera-free `MonitorEngine` state machine (`armed → recording → padding → armed`) fed one frame at a time; it holds a bounded pre-trigger ring buffer and reuses the existing detection constants. (2) `hsc/frame_writer.py` — a background writer thread that encodes BMPs itself (no SDK), so grabbing never pauses while an event is being written. (3) A thin GUI layer split per the `hsc/gui/` recipe: a new `MonitorMixin` (`hsc/gui/monitor.py`) owns the button/queue-handler/chain-pump UI side, and `_do_monitor` in `hsc/gui/camera_worker.py` runs the grab loop, dispatched from `_camera_worker`'s request ladder exactly like `_do_capture`. All heavy logic is unit-testable headless; a replay harness proves the online detector finds the same windows as the offline one on recorded bursts.

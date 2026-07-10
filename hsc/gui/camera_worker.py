@@ -11,13 +11,16 @@ the UI thread only through ``output_queue`` / ``preview_queue``.
 
 import time
 from ctypes import byref, c_void_p, string_at
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 from hsc import capture_image
+from hsc import frame_writer
 from hsc import injection_extract
+from hsc import monitor
 from hsc import smart_save
 from hsc.gui.config import INJECTION_DIR
 
@@ -60,6 +63,18 @@ class CameraWorkerMixin:
                     finally:
                         self.capture_requested.clear()
                         self.capture_abort.clear()
+                    continue
+
+                # Monitor mode: continuous grab + online injection detection,
+                # until the user clicks Stop Monitoring.
+                if self.monitor_requested.is_set():
+                    try:
+                        self._do_monitor(cam, sdk, self.monitor_params)
+                    except Exception as exc:
+                        self.output_queue.put(("CAPTURE_ERROR", f"Monitor: {exc}"))
+                    finally:
+                        self.monitor_requested.clear()
+                        self.monitor_stop.clear()
                     continue
 
                 # A single still was requested (angle block, scale reference,
@@ -281,6 +296,100 @@ class CameraWorkerMixin:
         finally:
             for clone_frame in cloned_frames:
                 cam.IMV_ReleaseFrame(clone_frame)
+
+    def _do_monitor(self, cam, sdk, params):
+        """Continuous grab + online detection until Stop Monitoring.
+
+        Hot path per frame: grab -> np copy -> release -> engine.feed ->
+        throttled preview. Event frames are written by the background
+        EventWriter; nothing in this loop touches the disk.
+        """
+        ok = sdk["IMV_OK"]
+        before = params.before if params is not None else 30
+        after = params.after if params is not None else 30
+        eng = monitor.MonitorEngine(before=before, after=after)
+        writer = frame_writer.EventWriter(
+            lambda d, saved_ok, msg: self.output_queue.put(
+                ("MONITOR_SAVED", (d, saved_ok, msg))))
+        self.output_queue.put(("STATUS", "MONITORING (armed)"))
+        self.output_queue.put(
+            "Monitoring started. Fire injections at will; "
+            "click Stop Monitoring to finish.\n")
+        n_events = 0
+        last_preview = 0.0
+        try:
+            while not (self.monitor_stop.is_set() or self.preview_stop.is_set()):
+                frame = sdk["IMV_Frame"]()
+                ret = cam.IMV_GetFrame(frame, 1000)
+                if ret != ok:
+                    continue
+                try:
+                    info = frame.frameInfo
+                    w, h = info.width, info.height
+                    flat = np.frombuffer(
+                        string_at(frame.pData, w * h), dtype=np.uint8)
+                    gray = flat.reshape(h, w).copy()
+                finally:
+                    cam.IMV_ReleaseFrame(frame)
+
+                event = eng.feed(gray)
+                now = time.perf_counter()
+                if now - last_preview > 0.04:            # ~25 fps preview
+                    last_preview = now
+                    self.preview_queue.put(("IMAGE", Image.fromarray(gray)))
+                if event is not None:
+                    if event["discarded"]:
+                        self.output_queue.put(
+                            f"[Monitor] ignored disturbance: {event['discarded']}\n")
+                    else:
+                        n_events += 1
+                        self._dispatch_monitor_event(
+                            event, writer, before, after, n_events)
+            # Stop pressed mid-jet: close and keep the partial event (it is
+            # saved AND processed, like any completed event).
+            tail = eng.flush()
+            if tail is not None:
+                if tail["discarded"]:
+                    self.output_queue.put(
+                        f"[Monitor] ignored disturbance: {tail['discarded']}\n")
+                else:
+                    n_events += 1
+                    self._dispatch_monitor_event(
+                        tail, writer, before, after, n_events)
+        finally:
+            writer.close()
+            discarded = eng.stats["discarded"]
+            note = f" ({discarded} disturbance(s) ignored)" if discarded else ""
+            self.output_queue.put((
+                "MONITOR_STOPPED",
+                f"Monitoring stopped: {n_events} injection(s){note}, "
+                f"{eng.stats['fed']} frames examined."))
+
+    def _dispatch_monitor_event(self, event, writer, before, after, n_events):
+        """Reserve the event's folder, queue the async write, and post the
+        make_result-shaped payload the UI holds until MONITOR_SAVED."""
+        h, w = event["frames"][0].shape
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        dest_dir = injection_extract.make_dest_dir(
+            Path(f"monitor_{stamp}_{w}x{h}"), INJECTION_DIR)
+        # Create the folder NOW (cheap, once per event) so the next event's
+        # make_dest_dir sees it and picks a unique name even while the
+        # writer is still working through its queue.
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        meta = smart_save.make_meta(event["bounds"], event["window"],
+                                    "monitor (online)")
+        writer.submit(str(dest_dir), event["names"], event["frames"], meta)
+        result = smart_save.make_result(
+            event["seq_names"], event["seq_signal"], event["bounds"],
+            event["window"], source_dir="monitor", dest_dir=str(dest_dir),
+            before=before, after=after, method="monitor (online)")
+        note = f" [{event['dropped_note']}]" if event["dropped_note"] else ""
+        self.output_queue.put(
+            f"Injection #{n_events} detected -> {dest_dir.name} "
+            f"({len(event['names'])} frames){note}\n")
+        self.output_queue.put(
+            ("STATUS", f"MONITORING (armed) - {n_events} injection(s)"))
+        self.output_queue.put(("MONITOR_EVENT", result))
 
     def _grab_still(self, cam, sdk, prefix, done_kind, dest_dir):
         """Grab one frame, save it to *dest_dir*, and post its path to the GUI."""

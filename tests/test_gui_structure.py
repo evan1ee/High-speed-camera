@@ -42,6 +42,7 @@ def test_expected_message_kinds_present():
         "CAPTURE_DONE", "CAPTURE_ERROR",
         "EXTRACT_DONE", "EXTRACT_ERROR",
         "MEASURE_DONE", "MEASURE_ERROR",
+        "MONITOR_EVENT", "MONITOR_SAVED", "MONITOR_STOPPED",
         "BLOCK_CAPTURED", "BLOCK_DONE", "BLOCK_ERROR",
         "VIDEO_DONE", "VIDEO_ERROR",
         "SCALE_CAPTURED", "SCALE_DONE", "SCALE_ERROR",
