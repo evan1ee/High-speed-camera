@@ -76,7 +76,7 @@ class CalibrationMixin:
             except ValueError:
                 ref_mm = 10.0
             self._append_log(
-                f"Captured {path}\nAuto-detecting two dark lines (left third)...\n"
+                f"Captured {path}\nAuto-detecting the two block edges (left third)...\n"
             )
             self.status_var.set("Auto-calibrating...")
             self.scale_thread = threading.Thread(

@@ -97,8 +97,25 @@ ERF_MIN_AMP = 8.0            # reject fits with less contrast than this
 #              (count from injection_meta.json, written by injection_extract),
 #              so the background never contains the jet. Falls back to "window"
 #              when the meta file is absent or too few pre-frames exist.
-BG_MODE = "window"           # part of the opt-in edge-detection V2 set
+BG_MODE = "pre-onset"        # default: never bake a steady jet into the bg.
+                             # A steady jet dominates the whole-window median,
+                             # gets subtracted away, fails MIN_PEAK, and the
+                             # jet-frame counter then skips the real steady
+                             # phase (measured frames land ~100 frames late).
+                             # Safe: falls back to "window" without meta.
 BG_MIN_PRE_FRAMES = 8        # need at least this many jet-free frames
+
+# Auto-pick measure mode: instead of fixed start..end jet-frame indices,
+# scan from the first measurable jet frame and measure the FIRST run of
+# AUTO_PICK_COUNT file-consecutive frames where the jet is stable: span
+# spread within AUTO_STABLE_TOL of the window median AND angle spread within
+# AUTO_STABLE_ANGLE_TOL. The angle check matters: a fast jet reaches full
+# span on its first frame, so during the burst the span is already steady
+# while the measured angle is still settling. Falls back to the steadiest
+# run seen if no window qualifies.
+AUTO_PICK_COUNT = 10
+AUTO_STABLE_TOL = 0.05
+AUTO_STABLE_ANGLE_TOL = 0.5   # deg; max-min angle across the window
 
 NOZZLE_SIDE = +1           # +1: nozzle on the right of the frame, -1: left
 NOZZLE_SKIP = 14           # exclude this many px next to the nozzle (origin)
@@ -762,10 +779,52 @@ def annotate(gray, result, scale=SUPERSAMPLE, show_edges=False):
 
 
 # ---- Folder workflow -----------------------------------------------------
+def _window_spread_ok(window, tol=AUTO_STABLE_TOL, angles=None,
+                      angle_tol=AUTO_STABLE_ANGLE_TOL):
+    """True if every span in *window* is measurable (not None), the span
+    spread (max - min) is within *tol* of the window median, and -- when
+    *angles* is given -- the angle spread is within *angle_tol* degrees."""
+    if any(s is None for s in window):
+        return False
+    med = float(np.median(window))
+    if med <= 0 or (max(window) - min(window)) > tol * med:
+        return False
+    if angles is not None:
+        if any(a is None for a in angles):
+            return False
+        if max(angles) - min(angles) > angle_tol:
+            return False
+    return True
+
+
+def find_stable_window(spans, angles=None, count=AUTO_PICK_COUNT,
+                       tol=AUTO_STABLE_TOL, angle_tol=AUTO_STABLE_ANGLE_TOL):
+    """Index of the FIRST run of *count* consecutive stable frames, else None.
+
+    *spans* (and optionally *angles*) hold one entry per frame in folder
+    order: the measured value, or None for a frame with no measurable jet
+    (breaks the run).
+    """
+    for i in range(count, len(spans) + 1):
+        a = angles[i - count:i] if angles is not None else None
+        if _window_spread_ok(spans[i - count:i], tol, a, angle_tol):
+            return i - count
+    return None
+
+
 def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_END,
-                   start_x=None, end_x=None, line_frac=None, progress=None):
+                   start_x=None, end_x=None, line_frac=None, progress=None,
+                   auto_pick=False):
     """Measure jet frames ``start`` .. ``end`` (1-based, from the first frame
-    that has a jet) and save annotated images + a CSV report."""
+    that has a jet) and save annotated images + a CSV report.
+
+    With ``auto_pick=True`` the ``start``/``end`` indices are ignored: the scan
+    walks forward from the first measurable jet frame and measures the FIRST
+    run of ``AUTO_PICK_COUNT`` file-consecutive frames whose jet span is
+    stable (``find_stable_window``) -- the settled jet right after the burst.
+    If no window qualifies, the steadiest run seen is used instead
+    (``auto_pick_fallback`` is set in the result).
+    """
     source_dir = Path(source_dir)
     files = list_frames(source_dir)
     if not files:
@@ -791,22 +850,66 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
 
     # Pass 1: measure. Annotation happens after, because the span-ratio quality
     # metric needs the longest jet in the run as its reference.
-    target = end - start + 1
     measured = []
-    jet_count = 0
-    for path in files:
-        if jet_count >= end:
-            break
-        gray = load_gray(path)
-        result = measure_frame(gray, bg, start_x=start_x, end_x=end_x, line_frac=line_frac)
-        if result is None:
-            continue
-        jet_count += 1
-        if jet_count < start:
-            continue
-        measured.append((path.name, gray, result))
-        if progress is not None:
-            progress(len(measured), target)
+    auto_fallback = False
+    if auto_pick:
+        # Walk from the first measurable jet frame; stop at the first run of
+        # AUTO_PICK_COUNT file-consecutive frames with a stable jet (span AND
+        # angle -- span alone stays steady even during the burst).
+        spans = []
+        angles_seen = []
+        recent = []                       # last frames of the current run
+        best = None                       # (instability, entries) fallback
+        for path in files:
+            gray = load_gray(path)
+            result = measure_frame(gray, bg, start_x=start_x, end_x=end_x,
+                                   line_frac=line_frac)
+            if result is None:
+                spans.append(None)
+                angles_seen.append(None)
+                recent = []
+            else:
+                spans.append(result["jet_span"])
+                angles_seen.append(result["angle"])
+                recent.append((path.name, gray, result))
+                if len(recent) > AUTO_PICK_COUNT:
+                    recent.pop(0)
+                if len(recent) == AUTO_PICK_COUNT:
+                    window = spans[-AUTO_PICK_COUNT:]
+                    win_angles = angles_seen[-AUTO_PICK_COUNT:]
+                    if _window_spread_ok(window, angles=win_angles):
+                        measured = list(recent)
+                        break
+                    # Fallback ranking: combined relative span spread +
+                    # angle spread (in units of their tolerances).
+                    med = float(np.median(window))
+                    rel = ((max(window) - min(window)) / (med * AUTO_STABLE_TOL)
+                           if med > 0 else float("inf"))
+                    rel += (max(win_angles) - min(win_angles)) / AUTO_STABLE_ANGLE_TOL
+                    if best is None or rel < best[0]:
+                        best = (rel, list(recent))
+            if progress is not None:
+                progress(len(spans), len(files))
+        if not measured and best is not None:
+            measured = best[1]            # steadiest run seen
+            auto_fallback = True
+        target = AUTO_PICK_COUNT
+    else:
+        target = end - start + 1
+        jet_count = 0
+        for path in files:
+            if jet_count >= end:
+                break
+            gray = load_gray(path)
+            result = measure_frame(gray, bg, start_x=start_x, end_x=end_x, line_frac=line_frac)
+            if result is None:
+                continue
+            jet_count += 1
+            if jet_count < start:
+                continue
+            measured.append((path.name, gray, result))
+            if progress is not None:
+                progress(len(measured), target)
 
     if not measured:
         raise RuntimeError(
@@ -929,6 +1032,8 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
         "bg_mode": bg_source,   # the background actually used (pre-onset
                                 # silently falls back to window without meta)
         "angle_policy_mode": ANGLE_POLICY,
+        "auto_pick": bool(auto_pick),
+        "auto_pick_fallback": auto_fallback,
         "run_quality": run_score,
         "confidence": run_conf,
         "frames": [(name, r["angle"]) for name, _, r in measured],

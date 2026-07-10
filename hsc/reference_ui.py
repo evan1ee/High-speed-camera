@@ -5,7 +5,7 @@
 
 Auto-detecting the tip on the reflective nozzle is unreliable, so the user draws
 the tip edge directly: **drag along the nozzle tip edge** (e.g. top to bottom)
-to place the thin red line; the blue **centerline** (perpendicular, through the
+to place the thin yellow line; the blue **centerline** (perpendicular, through the
 edge midpoint, across the frame = spray axis) is built live. *Save* stores
 ``reference_lines.json`` and a native-resolution check image.
 """
@@ -20,7 +20,8 @@ from hsc import calibrate_scale
 from hsc import reference_lines as rl
 
 
-RED = "#ff0000"            # tip edge
+RED = "#ff0000"            # rectangle (target band)
+YELLOW = "#ffff00"         # tip edge (the user-drawn line)
 BLUE = "#0080ff"           # centerline
 MAX_DISPLAY_W = 960
 MAX_DISPLAY_H = 680
@@ -29,7 +30,7 @@ MAX_DISPLAY_H = 680
 class ReferenceDialog(tk.Toplevel):
     def __init__(self, parent, image_path, nozzle_side=1, on_saved=None):
         super().__init__(parent)
-        self.title("Set Reference - drag along the nozzle tip edge to draw the red line")
+        self.title("Set Reference - drag along the nozzle tip edge to draw the yellow line")
         self.image_path = image_path
         self.nozzle_side = nozzle_side
         self.on_saved = on_saved
@@ -43,7 +44,7 @@ class ReferenceDialog(tk.Toplevel):
         self.ref = None
 
         self.status_var = tk.StringVar(
-            value="Drag along the nozzle tip edge (top to bottom) to draw the red line.")
+            value="Drag along the nozzle tip edge (top to bottom) to draw the yellow line.")
         self._build()
         self.transient(parent)
         self.grab_set()
@@ -51,7 +52,7 @@ class ReferenceDialog(tk.Toplevel):
     def _build(self):
         bar = ttk.Frame(self, padding=8)
         bar.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(bar, text="Drag = red tip edge; blue centerline is built automatically.").pack(
+        ttk.Label(bar, text="Drag = yellow tip edge; blue centerline is built automatically.").pack(
             side=tk.LEFT)
         self.redraw_btn = ttk.Button(bar, text="Redraw", command=self._redraw,
                                      state=tk.DISABLED)
@@ -87,7 +88,7 @@ class ReferenceDialog(tk.Toplevel):
         self.save_btn.configure(state=tk.DISABLED)
         self.redraw_btn.configure(state=tk.DISABLED)
         self.status_var.set(
-            "Drag along the nozzle tip edge (top to bottom) to draw the red line.")
+            "Drag along the nozzle tip edge (top to bottom) to draw the yellow line.")
 
     def _cline(self, a, b, color, width, dash=None):
         i = self.canvas.create_line(a[0] * self.scale, a[1] * self.scale,
@@ -104,7 +105,7 @@ class ReferenceDialog(tk.Toplevel):
             return
         self._clear()
         p1 = (ev.x / self.scale, ev.y / self.scale)
-        self._cline(self._drag_start, p1, RED, 2)
+        self._cline(self._drag_start, p1, YELLOW, 2)
 
     def _on_release(self, ev):
         if not self._drag_start:
@@ -135,10 +136,15 @@ class ReferenceDialog(tk.Toplevel):
     def _draw_all(self):
         self._clear()
         self._cline(self.ref["blue_a"], self.ref["blue_b"], BLUE, 1)
-        self._cline(self.ref["nozzle_p0"], self.ref["nozzle_p1"], RED, 1)
-        rect = self.ref.get("rect")
-        if rect:
-            x0, y0, x1, y1 = (v * self.scale for v in rect)
+        self._cline(self.ref["nozzle_p0"], self.ref["nozzle_p1"], YELLOW, 1)
+        corners = self.ref.get("rect_corners")
+        if corners:
+            # Oriented band: long edges parallel to the blue centerline.
+            pts = corners + [corners[0]]
+            for p, q in zip(pts, pts[1:]):
+                self._cline(p, q, RED, 1)
+        elif self.ref.get("rect"):
+            x0, y0, x1, y1 = (v * self.scale for v in self.ref["rect"])
             i = self.canvas.create_rectangle(x0, y0, x1, y1, outline=RED, width=1)
             self._ids.append(i)
 

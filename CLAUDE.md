@@ -23,7 +23,9 @@ Capture button.
   (Make Video), `calibration.py` (Calibrate Scale / Auto Calibrate / Measure Block),
   `reference.py` (Set Reference), `config.py` (shared folders + `log_to_file`),
   `selftest.py` (headless `--selftest`). After a capture it chains:
-  `CAPTURE_DONE → auto find-injection (in-memory) → auto make slow-motion video → auto measure`.
+  `CAPTURE_DONE → auto find-injection (in-memory) → auto measure → auto make slow-motion video`
+  (a `Total time (find injection -> measurement finished)` line is logged when the chained
+  measurement completes; the video runs after it, outside the timed span).
   A **"Smart save"** checkbox (default OFF; variable + `smart_save` param in `capture.py`,
   widget in `layout.py`) routes `camera_worker._do_capture` through a *detect-before-write*
   branch: pass A computes the motion signal in RAM, `smart_save.plan_window` detects the
@@ -31,7 +33,7 @@ Capture button.
   `data\injection images\<run>` (+ `injection_meta.json`, guarded rmdir of the empty
   captures dir) and puts a ready `extract_result` in the CAPTURE_DONE payload — `capture.py`
   `_on_capture_done` dispatches that straight to `_on_extract_done`, **short-circuiting** the
-  find-injection step (video → measure chain unchanged). No injection detected / checkbox off
+  find-injection step (measure → video chain unchanged). No injection detected / checkbox off
   ⇒ the full burst is saved to `data\captures\<run>` exactly as before.
   Threads talk to the UI via
   `output_queue` / `preview_queue` drained by `after()` callbacks; each mixin declares a
@@ -75,18 +77,24 @@ Capture button.
   `calibrate_ui.CalibrationDialog`: the user drags an ROI around each edge, clicks *Detect Edge*.
   `detect_edge_in_roi` scans each ROI (orientation from ROI aspect), finds the sub-pixel edge per
   scan line, fits a line by RANSAC→TLS (reusing `measure_angle` helpers), and `_line_gap` takes
-  the perpendicular pixel distance; `mm_per_px = ref_mm / gap_px`. Default `mode="outer"`: a
-  chamfered block edge images as a **dark line** (chamfer reflects light away), so the true edge
-  is the **outer boundary** of that line — `_scanline_outer_edge` walks from the dark min to the
-  steepest-gradient flank facing *away from the other ROI* (`calibrate_from_rois` assigns the
-  outward sign from the ROI geometry). `mode` "dark"/"bright"/"step" use the feature extremum. Draws both green lines + ROI boxes
-  + gap connector + mm/px onto `*_scale.bmp` and writes `calibration.json` (via `data_root()`).
-  CLI for scripting/tests: `uv run python -m hsc.calibrate_scale still.bmp --ref-mm 10 --roi1 x0 y0 x1 y1
-  --roi2 x0 y0 x1 y1`. **"Auto Calibrate"** button skips the dialog: `auto_rois` finds the two
-  dark lines in the left `region_frac` (default 1/3, avoiding the right-side clutter) by
-  **per-column two-trough voting** (`_two_lines`; robust to a tilted or locally-faint edge that a
-  collapsed 1-D profile would wash out) and refuses if two well-separated edges aren't present in
-  most scan lines. Builds an ROI around each and runs the same outer-edge pipeline
+  the perpendicular pixel distance; `mm_per_px = ref_mm / gap_px`. **Block polarity is
+  auto-detected** (default `mode="auto"`): the current **5 mm block images as a bright bar on a
+  dark background**, so its two reference edges are the bright↔dark **steps** at the block boundary
+  (`mode="step"`, the polarity-agnostic gradient peak); the older chamfered block images as a
+  bright block with **dark edge-lines** (`mode="outer"`: `_scanline_outer_edge` walks from the dark
+  min to the steepest-gradient flank facing *away from the other ROI*). `_auto_fit_mode` /
+  `_roi_is_dark_line` inspect the ROIs and use `outer` only when BOTH look like dark lines, else
+  `step`. `mode` "dark"/"bright"/"step" force the feature extremum. Draws both green lines + ROI boxes
+  + gap connector + mm/px onto `*_scale.bmp` and writes `calibration.json` (to `settings\` at the repo root via `settings_path`).
+  CLI for scripting/tests: `uv run python -m hsc.calibrate_scale still.bmp --ref-mm 5 --roi1 x0 y0 x1 y1
+  --roi2 x0 y0 x1 y1` (`--mode` defaults to `auto`). **"Auto Calibrate"** button skips the dialog:
+  `auto_rois` finds the two block edges in the left `region_frac` (default 1/3, avoiding the
+  right-side clutter) by **per-scanline two-edge voting** — `_two_edges_bright` (longest bright run
+  per scan line → its two step boundaries, for the bright block) tried first, then `_two_lines`
+  (two-trough voting, for a dark-line block), in both orientations; the candidate with the most
+  supporting scan lines wins and its `fit_mode` is returned. Robust to a tilted or locally-faint
+  edge that a collapsed 1-D profile would wash out; refuses if two well-separated edges aren't
+  present in most scan lines. Builds an ROI around each and runs the fit in the detected mode
   (`auto_calibrate_image`). **"Measure Block"** button (`measure_block_size`) is the inverse: it
   auto-detects a block's two edges and reports its size in **mm** using the stored calibration
   **without** overwriting `calibration.json` (writes a `*_measured.bmp`). `load_calibration()` is
@@ -96,7 +104,7 @@ Capture button.
   atomically (temp file + `os.replace`) so a crash mid-save can't corrupt the rig's calibration.
 - **`hsc/reference_lines.py` / `hsc/reference_ui.py`** — nozzle **reference lines**: the **tip edge**
   (red) and the **centerline** (blue, through the tip midpoint, perpendicular, across the frame =
-  spray axis). GUI "Set Reference" **captures a nozzle still** (to `data\measure\reference\`, no jet in
+  spray axis). GUI "Set Reference" **captures a nozzle still** (to `data\reference line\`, no jet in
   view) and opens `reference_ui.ReferenceDialog`: the user **drags along the nozzle tip edge to
   draw the thin red line directly** (auto-detect is unreliable on the reflective nozzle, so the
   user places it) and the blue centerline is built live by `build_reference`. `save_check_image`
@@ -104,7 +112,7 @@ Capture button.
   (`attach_rectangle`, needs the scale calibration): a thin red box centered on the centerline,
   with near/far vertical edges `RECT_NEAR_MM`/`RECT_FAR_MM` (1.0 / 6.51 mm) downstream of the red
   line and height `RECT_HEIGHT_MM` (0.775 mm) — a jet target band. The reference (lines + rect) is
-  stored in `reference_lines.json` (`data_root()`) and overlaid on every measured frame by
+  stored in `reference_lines.json` (`settings\` at the repo root) and overlaid on every measured frame by
   `measure_folder` when the frame size matches. (`detect_tip_in_roi` /
   `set_reference_from_image/_folder` = auto-detect helpers, kept for CLI.) `NOZZLE_SIDE` = right.
 - **`hsc/app_paths.py`** — `resource_root()` (bundled read-only files: SDK, `Runtime` DLLs,
@@ -151,15 +159,20 @@ captures/cleans); don't assume a specific run folder exists — glob for it.
 angle → visualization/report`, using OpenCV + NumPy + SciPy +
 scikit-learn. Key, hard-won design decisions (do not regress these without reason):
 
-- **Edge-detection V2 (opt-in, benchmark-gated; defaults stay legacy).** Three flags,
-  flipped together by the `edge_v2()` context manager (the GUI's "Edge detection V2"
+- **Edge-detection V2 (opt-in, benchmark-gated; edge/policy defaults stay legacy).** Three
+  flags, flipped together by the `edge_v2()` context manager (the GUI's "Edge detection V2"
   checkbox routes each measure run through it; `V2_FLAGS` is the set):
   `EDGE_MODEL="erf"` adds a per-side blurred-step fit `I(y)=base+amp·Φ((y−μ)/σ)` per column
   as a THIRD candidate locus in the straightness contest (each side gets its own σ, so a
   skirted lower edge stops dragging its line; per-column confidence → `edge_conf_*`);
   `BG_MODE="pre-onset"` builds the background only from the jet-free padding frames at the
   folder start (count from `injection_meta.json`, written by `build_result`; silent fallback
-  to the window median — the result key `bg_mode` reports what was actually used);
+  to the window median — the result key `bg_mode` reports what was actually used).
+  **`BG_MODE="pre-onset"` is the DEFAULT** (not V2-gated): a steady jet dominates the
+  whole-window median, gets subtracted away, fails `MIN_PEAK`, and `measure_folder`'s
+  jet-frame counter then skips the real steady phase — the measured frames land ~100 frames
+  late in the decay (root-caused on run `20260710_100958`). Meta-less folders fall back to
+  the window median and behave exactly as before;
   `ANGLE_POLICY="trusted"` reports the trusted edge alone when exactly one edge is
   Low-confidence (per-edge `edge_quality` scores; `q_up,q_lo,policy` in `angles.csv`).
   `POOLED_FIT` (always on) additionally reports `pooled_angle`: one RANSAC→TLS fit per edge
@@ -207,6 +220,13 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   check; the fit/angle is unaffected by the clip.
 - Frames are selected by **jet-frame index** (`start..end`, default 10–20), counted from the
   first frame containing a jet (padding skipped) — measures the steady jet, skips the burst.
+  The GUI's **"Auto pick frames"** checkbox (disables the from/to entries) instead measures
+  the FIRST run of `AUTO_PICK_COUNT` (10) file-consecutive frames whose jet is stable —
+  span spread ≤ `AUTO_STABLE_TOL` of the window median AND angle spread ≤
+  `AUTO_STABLE_ANGLE_TOL` (the angle check is essential: a fast jet reaches full span on its
+  first frame, so during the burst only the angle is still settling). No qualifying window ⇒
+  the steadiest run seen is used and `auto_pick_fallback` is set
+  (`measure_folder(..., auto_pick=True)`, `find_stable_window`).
 - **Line-quality standard + confidence** (`QUALITY_*`, `frame_quality`, `confidence_level`):
   each frame scores 0–100 = min(fit, coverage, span) where fit = robust RMS of raw subpixel
   edges vs the fitted line, coverage = ROI columns with an edge, span = jet length vs run max
