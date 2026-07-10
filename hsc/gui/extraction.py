@@ -158,14 +158,15 @@ class ExtractionMixin:
         self.last_injection_dir = Path(result["dest_dir"])
 
         # Chain when this extraction was triggered by a capture:
-        # find injection -> make slow-motion video -> measure. The video runs on
-        # its own thread; measure is chained once it finishes (VIDEO_DONE), gated
-        # by auto_measure_pending which stays set until then.
+        # find injection -> measure -> make slow-motion video. Measure runs on
+        # its own thread; the video is chained once it finishes (MEASURE_DONE),
+        # gated by auto_measure_pending which stays set until then.
         if self.auto_measure_pending:
-            self._make_video(self.last_injection_dir)
+            self._measure_injection(self.last_injection_dir)
 
     def _on_extract_error(self, payload):
         self.status_var.set(f"Injection: {payload}")
         self._append_log(f"[Injection Error] {payload}\n")
         self.extract_button.configure(state=tk.NORMAL)
         self.auto_measure_pending = False
+        self._pipeline_t0 = None

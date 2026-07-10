@@ -13,7 +13,7 @@ INJECTION_DIR = ROOT / "injection images"
 MEASURE_DIR = ROOT / "measure"
 BLOCK_DIR = MEASURE_DIR / "angle_block"
 SCALE_DIR = MEASURE_DIR / "block"
-REFERENCE_DIR = MEASURE_DIR / "reference"
+REFERENCE_DIR = ROOT / "reference line"
 ASPECT_PRESETS = ("1:1", "2:1", "4:3", "16:9", "320x240")
 IMAGE_EXTENSIONS = (".bmp", ".png", ".jpg", ".tif")
 

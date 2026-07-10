@@ -43,7 +43,7 @@ class ReferenceMixin:
         self.reference_button.configure(state=tk.NORMAL)
         self._append_log(
             f"Captured {path}\n"
-            "Draw a box on the nozzle tip, then click 'Detect Edge'.\n"
+            "Drag along the nozzle tip edge to draw the yellow line.\n"
         )
         try:
             reference_ui.ReferenceDialog(
@@ -55,9 +55,11 @@ class ReferenceMixin:
 
     def _on_reference_done(self, ref):
         self.reference_button.configure(state=tk.NORMAL)
+        # Show the just-saved reference live on the preview immediately.
+        self._refresh_preview_reference()
         self._append_log(
             "Nozzle reference set.\n"
-            f"  Tip edge (red):    x={ref['nozzle_p0'][0]:.0f}, "
+            f"  Tip edge (yellow): x={ref['nozzle_p0'][0]:.0f}, "
             f"y={ref['nozzle_p0'][1]:.0f}..{ref['nozzle_p1'][1]:.0f}\n"
             f"  Centerline (blue): y={ref['mid'][1]:.0f}\n"
             f"  Saved to:  {ref.get('reference_file', '?')}\n"

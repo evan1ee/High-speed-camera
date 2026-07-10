@@ -38,10 +38,40 @@ def resource_root() -> Path:
 
 def data_root() -> Path:
     """Base folder for user output written at runtime (``captures``,
-    ``injection images``, ``measure``, calibration/reference JSON). Next to the
+    ``injection images``, ``measure``, ``settings``). Next to the
     .exe when frozen; ``<root>/data`` from source (created on demand)."""
     if is_frozen():
         return Path(sys.executable).resolve().parent
     root = Path(__file__).resolve().parents[1] / "data"
     root.mkdir(exist_ok=True)
     return root
+
+
+def settings_path(name: str) -> Path:
+    """Path of a rig-settings file (``calibration.json``,
+    ``reference_lines.json``) inside ``<root>/settings`` -- next to ``data/``
+    from source, next to the .exe when frozen.
+
+    Files used to live at the ``data_root()`` top level and then in
+    ``data/settings``; if the new path does not exist yet but an old one
+    does, the old file (and its ``.bak``) is migrated in, so existing rigs
+    keep their calibration after upgrading.
+    """
+    if is_frozen():
+        base = Path(sys.executable).resolve().parent
+    else:
+        base = Path(__file__).resolve().parents[1]
+    folder = base / "settings"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    for old in (data_root() / "settings" / name, data_root() / name):
+        if path.exists() or not old.exists() or old == path:
+            continue
+        try:
+            old.replace(path)
+            old_bak = old.with_name(old.name + ".bak")
+            if old_bak.exists():
+                old_bak.replace(folder / old_bak.name)
+        except OSError:
+            pass
+    return path

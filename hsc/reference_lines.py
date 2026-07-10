@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""Nozzle reference lines: the tip-edge line (red) and the centerline (blue).
+"""Nozzle reference lines: the tip-edge line (yellow) and the centerline (blue).
 
-The user marks the nozzle tip edge as a short line segment (the **red** line);
+The user marks the nozzle tip edge as a short line segment (the **yellow** line);
 from it a **centerline** (blue) is constructed through the edge's midpoint,
 **perpendicular** to the edge, and extended across the image -- the spray axis.
-The reference is stored in ``reference_lines.json`` (via ``data_root()``) so it
-can be overlaid on every measured frame while the nozzle/camera stay put.
+The reference is stored in ``reference_lines.json`` (in the root ``settings``
+folder via ``settings_path``) so it can be overlaid on every measured frame
+while the nozzle/camera stay put.
 
 Coordinates are image pixels at native resolution; drawing scales them.
 """
@@ -21,11 +22,12 @@ import cv2
 import numpy as np
 
 from hsc import injection_extract
-from hsc.app_paths import data_root
+from hsc.app_paths import data_root, settings_path
 
 
 REFERENCE_FILE = "reference_lines.json"
-RED = (0, 0, 255)          # BGR - nozzle tip edge / rectangle
+RED = (0, 0, 255)          # BGR - rectangle (target band)
+YELLOW = (0, 255, 255)     # BGR - nozzle tip edge (the user-drawn line)
 BLUE = (255, 128, 0)       # BGR - centerline (spray axis)
 
 # Rectangle reference (a target band along the jet), sized in mm from the red
@@ -169,19 +171,34 @@ def build_reference(p0, p1, image_size):
 def attach_rectangle(ref, mm_per_px, nozzle_side=1,
                      near_mm=RECT_NEAR_MM, far_mm=RECT_FAR_MM,
                      height_mm=RECT_HEIGHT_MM):
-    """Add a mm-sized rectangle to ``ref``, built from the red line and centerline.
+    """Add a mm-sized rectangle to ``ref``, built from the tip line and centerline.
 
-    The rectangle is centered on the blue centerline; its near/far vertical edges
-    sit ``near_mm``/``far_mm`` downstream of the red line (away from the nozzle),
-    and it is ``height_mm`` tall. Pixel corners are computed with ``mm_per_px``.
+    The rectangle is **oriented along the blue centerline** (its long edges are
+    parallel to the centerline, its short edges parallel to the yellow tip line),
+    so a tilted reference keeps the band on the spray axis. It is centered on
+    the centerline; the near/far short edges sit ``near_mm``/``far_mm``
+    downstream of the tip line (away from the nozzle) and it is ``height_mm``
+    tall. Corners are stored in ``rect_corners`` (4 points, closed polygon
+    order); ``rect`` keeps the axis-aligned bounding box for consumers that
+    only need the x-window (and for older readers).
     """
-    red_x = ref["nozzle_p0"][0]
-    cy = ref["mid"][1]
-    x_near = red_x - nozzle_side * (near_mm / mm_per_px)
-    x_far = red_x - nozzle_side * (far_mm / mm_per_px)
+    a = np.array(ref["nozzle_p0"], dtype=float)
+    b = np.array(ref["nozzle_p1"], dtype=float)
+    mid = np.array(ref["mid"], dtype=float)
+    d = b - a
+    d /= float(np.hypot(*d))               # unit vector along the red tip edge
+    u = np.array([-d[1], d[0]])            # unit vector along the centerline
+    if u[0] * nozzle_side > 0:             # orient downstream (away from nozzle)
+        u = -u
+    c_near = mid + u * (near_mm / mm_per_px)
+    c_far = mid + u * (far_mm / mm_per_px)
     hh = 0.5 * height_mm / mm_per_px
-    x0, x1 = sorted((x_near, x_far))
-    ref["rect"] = [x0, cy - hh, x1, cy + hh]
+    corners = [c_near - d * hh, c_near + d * hh,
+               c_far + d * hh, c_far - d * hh]
+    ref["rect_corners"] = [[float(p[0]), float(p[1])] for p in corners]
+    xs = [p[0] for p in corners]
+    ys = [p[1] for p in corners]
+    ref["rect"] = [min(xs), min(ys), max(xs), max(ys)]
     ref["rect_near_mm"] = near_mm
     ref["rect_far_mm"] = far_mm
     ref["rect_height_mm"] = height_mm
@@ -190,12 +207,16 @@ def attach_rectangle(ref, mm_per_px, nozzle_side=1,
 
 
 def draw_reference(img_bgr, ref, scale=1, width=1):
-    """Draw the red tip-edge line, blue centerline, and (if set) the rectangle."""
+    """Draw the yellow tip-edge line, blue centerline, and (if set) the rectangle."""
     def pt(xy):
         return (int(round(xy[0] * scale)), int(round(xy[1] * scale)))
     cv2.line(img_bgr, pt(ref["blue_a"]), pt(ref["blue_b"]), BLUE, width, cv2.LINE_AA)
-    cv2.line(img_bgr, pt(ref["nozzle_p0"]), pt(ref["nozzle_p1"]), RED, width, cv2.LINE_AA)
-    if ref.get("rect"):
+    cv2.line(img_bgr, pt(ref["nozzle_p0"]), pt(ref["nozzle_p1"]), YELLOW, width, cv2.LINE_AA)
+    corners = ref.get("rect_corners")
+    if corners:
+        poly = np.array([pt(p) for p in corners], dtype=np.int32)
+        cv2.polylines(img_bgr, [poly], True, RED, width, cv2.LINE_AA)
+    elif ref.get("rect"):                  # older reference: axis-aligned box
         x0, y0, x1, y1 = ref["rect"]
         cv2.rectangle(img_bgr, pt((x0, y0)), pt((x1, y1)), RED, width, cv2.LINE_AA)
     return img_bgr
@@ -250,12 +271,14 @@ def save_check_image(gray, ref, out_path):
 
 
 def save_reference(ref):
-    path = data_root() / REFERENCE_FILE
+    path = settings_path(REFERENCE_FILE)
     # Back up any existing reference to <name>.bak, then write atomically so a
     # crash mid-write can't strand the rig with a truncated reference file.
     if path.exists():
         try:
-            shutil.copy2(path, path.with_name(path.name + ".bak"))
+            # copy (not copy2): the .bak's mtime = when the backup was made,
+            # matching the new file's save time instead of the old version's.
+            shutil.copy(path, path.with_name(path.name + ".bak"))
         except OSError:
             pass
     tmp = path.with_name(path.name + ".tmp")
@@ -266,7 +289,7 @@ def save_reference(ref):
 
 def load_reference():
     """Return the stored reference dict, or None if not set yet."""
-    path = data_root() / REFERENCE_FILE
+    path = settings_path(REFERENCE_FILE)
     if not path.exists():
         return None
     try:

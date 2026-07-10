@@ -4,10 +4,14 @@
 """Spatial calibration: mm per pixel from two reference edges a known distance apart.
 
 Industrial-style ROI workflow: the user draws a Region Of Interest around each
-of the two reference edges (e.g. the two dark edge-lines of a 10 mm gauge block).
-Inside each ROI the software finds the edge automatically to sub-pixel precision
-and fits a straight line to it; the perpendicular distance between the two fitted
-lines is the reference length in pixels:
+of the two reference edges of a gauge block. The block may image either as a
+**bright bar on a dark background** (its two reference edges are the bright<->dark
+*steps* at the block boundary) or as a bright block with **dark chamfer edge-lines**
+(the true edge is the outer flank of each dark line). Detection auto-selects the
+polarity, so the same workflow serves both. Inside each ROI the software finds the
+edge automatically to sub-pixel precision and fits a straight line to it; the
+perpendicular distance between the two fitted lines is the reference length in
+pixels:
 
     ROI -> Gaussian blur -> per-scanline edge (sub-pixel) -> TLS line fit
     mm_per_px = ref_mm / perpendicular_distance_px
@@ -15,7 +19,7 @@ lines is the reference length in pixels:
 The ROI removes reflections, the nozzle and other background clutter that defeat
 whole-frame auto-detection; the user only indicates *where* each edge is, the
 software locates it precisely. Results (mm/px, the two line params) are stored in
-``calibration.json`` via ``data_root()``; an annotated ``*_scale.bmp`` shows the
+``calibration.json`` via ``settings_path``; an annotated ``*_scale.bmp`` shows the
 two green lines + the value. Interactive use is via the GUI "Calibrate Scale"
 button (see ``calibrate_ui.py``). CLI, for scripting/tests:
 
@@ -39,7 +43,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from hsc import measure_angle as ma
-from hsc.app_paths import data_root
+from hsc.app_paths import data_root, settings_path
 
 
 CALIBRATION_FILE = "calibration.json"
@@ -149,15 +153,47 @@ def _line_gap(edge_a, edge_b):
     return 0.5 * (perp(edge_b["points"], edge_a) + perp(edge_a["points"], edge_b))
 
 
-def calibrate_from_rois(gray, roi1, roi2, ref_mm, mode="outer"):
+def _roi_is_dark_line(gray, roi, w, h):
+    """True if ``roi`` straddles a DARK edge-line (a dark trough with brighter
+    pixels on BOTH sides), as opposed to a bright<->dark step at a block edge.
+
+    Collapses the ROI along its edge-parallel axis to a 1-D profile across the
+    scan axis and checks whether the darkest sample sits in the interior with
+    both ends clearly brighter (dark line) or at an end (a step).
+    """
+    x0, y0, x1, y1 = _clip_roi(roi, w, h)
+    sub = gray[y0:y1, x0:x1].astype(np.float64)
+    horizontal = (x1 - x0) >= (y1 - y0)
+    prof = np.median(sub, axis=1) if horizontal else np.median(sub, axis=0)
+    k = int(np.argmin(prof))
+    if k <= 0 or k >= len(prof) - 1:
+        return False                       # darkest at an end -> a step, not a line
+    return (prof[0] - prof[k] >= 0.3 * DARK_MIN_DEPTH
+            and prof[-1] - prof[k] >= 0.3 * DARK_MIN_DEPTH
+            and max(prof[0], prof[-1]) - prof[k] >= DARK_MIN_DEPTH)
+
+
+def _auto_fit_mode(gray, roi1, roi2, w, h):
+    """Pick the edge locus from the ROI content: ``"outer"`` (dark chamfer line)
+    only when BOTH ROIs look like dark lines, else ``"step"`` (bright block edge --
+    the polarity-agnostic gradient peak that suits the bright 5 mm block)."""
+    dark = sum(_roi_is_dark_line(gray, roi, w, h) for roi in (roi1, roi2))
+    return "outer" if dark == 2 else "step"
+
+
+def calibrate_from_rois(gray, roi1, roi2, ref_mm, mode="auto"):
     """Detect both edges, measure their gap, and return a calibration record.
 
-    ``mode="outer"`` (default) locates the OUTER boundary of each dark chamfer
-    line -- the real block edge -- with each ROI's outer side taken as the side
-    facing away from the other ROI. ``mode`` "dark"/"bright"/"step" instead uses
-    that ``feature`` extremum directly (dark-line centre, etc.).
+    ``mode="auto"`` (default) inspects the ROIs and uses ``"step"`` for a bright
+    block edge or ``"outer"`` for a dark chamfer edge-line. ``mode="outer"``
+    locates the OUTER boundary of each dark chamfer line -- the real block edge --
+    with each ROI's outer side taken as the side facing away from the other ROI.
+    ``mode`` "dark"/"bright"/"step" instead uses that ``feature`` extremum
+    directly (dark-line centre, bright peak, or gradient peak/step).
     """
     h, w = gray.shape
+    if mode == "auto":
+        mode = _auto_fit_mode(gray, roi1, roi2, w, h)
     if mode == "outer":
         c1 = _clip_roi(roi1, w, h)
         c2 = _clip_roi(roi2, w, h)
@@ -246,7 +282,9 @@ def _atomic_write_json(path, record):
     path = Path(path)
     if path.exists():
         try:
-            shutil.copy2(path, path.with_name(path.name + ".bak"))
+            # copy (not copy2): the .bak's mtime = when the backup was made,
+            # matching the new file's save time instead of the old version's.
+            shutil.copy(path, path.with_name(path.name + ".bak"))
         except OSError:
             pass
     tmp = path.with_name(path.name + ".tmp")
@@ -275,13 +313,13 @@ def save_calibration(result, image_path, save_json=True):
         "annotated": str(out_path),
     }
     if save_json:
-        cal_path = data_root() / CALIBRATION_FILE
+        cal_path = settings_path(CALIBRATION_FILE)
         _atomic_write_json(cal_path, record)
         record["calibration_file"] = str(cal_path)
     return record
 
 
-def calibrate(image_path, roi1, roi2, ref_mm, mode="outer", save=True):
+def calibrate(image_path, roi1, roi2, ref_mm, mode="auto", save=True):
     """One-shot: detect edges in the two ROIs and store the calibration."""
     gray = ma.load_gray(Path(image_path))
     result = calibrate_from_rois(gray, roi1, roi2, ref_mm, mode)
@@ -290,8 +328,44 @@ def calibrate(image_path, roi1, roi2, ref_mm, mode="outer", save=True):
 
 DARK_MIN_DEPTH = 35        # a column trough must dip this many gray levels below
                            # its own bright level to count as a dark edge line
+BRIGHT_MIN_RISE = 35       # the block interior must exceed the background by this
+                           # many gray levels for a column to count (bright block)
 AUTO_MIN_SEP_FRAC = 0.20   # the two edges must span >= this fraction of the region
 AUTO_MIN_COL_FRAC = 0.25   # this fraction of scan lines must show BOTH edges
+
+
+def _two_edges_bright(region):
+    """Per-scanline detection of the two parallel edges of a BRIGHT block.
+
+    The 5 mm calibration block images as a bright bar on a dark background, so
+    its two reference edges are the outer boundaries of the block's bright run
+    (bright<->dark steps), not dark lines. For each scan line keep the longest
+    bright run above that line's own mid-level (robust to uneven lighting); its
+    first and last positions are the near/far edges, required well separated.
+    Longest-run selection ignores small reflections and every scan line votes,
+    so a tilted or locally-faint block still resolves. Returns
+    ``(pos_near, pos_far, n_support)`` or None.
+    """
+    h, wr = region.shape
+    near, far = [], []
+    for x in range(wr):
+        col = gaussian_filter1d(region[:, x].astype(np.float64), EDGE_SMOOTH)
+        lo = float(np.percentile(col, 10))
+        hi = float(np.percentile(col, 90))
+        if hi - lo < BRIGHT_MIN_RISE:                  # no clear block here
+            continue
+        bright = np.flatnonzero(col > 0.5 * (lo + hi))
+        if bright.size < 2:
+            continue
+        runs = np.split(bright, np.flatnonzero(np.diff(bright) > 1) + 1)
+        run = max(runs, key=len)
+        a, b = int(run[0]), int(run[-1])
+        if b - a >= AUTO_MIN_SEP_FRAC * h and a > 0 and b < h - 1:
+            near.append(a)
+            far.append(b)
+    if len(near) < max(8, int(AUTO_MIN_COL_FRAC * wr)):
+        return None
+    return float(np.median(near)), float(np.median(far)), len(near)
 
 
 def _two_lines(region):
@@ -323,52 +397,65 @@ def _two_lines(region):
 
 
 def auto_rois(gray, region_frac=1.0 / 3.0, band=8):
-    """Auto-find the two dark reference lines in the left ``region_frac`` of the
-    frame and return an ROI around each (avoids the nozzle/reflection clutter on
-    the right). Raises if two clear, well-separated dark edge-lines are not both
-    present in most scan lines.
+    """Auto-find the block's two reference edges in the left ``region_frac`` of the
+    frame and return ``(roi1, roi2, fit_mode)`` -- an ROI around each edge plus the
+    edge-locus to fit them with (avoids the nozzle/reflection clutter on the
+    right). A BRIGHT block (white bar on dark -> ``"step"`` edges) is tried first,
+    then a dark chamfer-line block (``"outer"``), in both orientations; the
+    candidate present in the most scan lines wins. Raises if neither block
+    presents two clear, well-separated edges in most scan lines.
     """
     gray = gray.astype(np.float64)
     h, w = gray.shape
     x_hi = max(12, int(round(w * region_frac)))
     region = gray[:, :x_hi]
-    horiz = _two_lines(region)             # horizontal lines: scan columns
-    vert = _two_lines(region.T)            # vertical lines: scan rows (transpose)
 
-    cands = [(o, c) for o, c in (("h", horiz), ("v", vert)) if c]
+    # (fit_mode, orient, (near, far, support)); scan columns for a horizontal
+    # edge, rows (transpose) for a vertical one.
+    cands = []
+    for orient, reg in (("h", region), ("v", region.T)):
+        bright = _two_edges_bright(reg)
+        if bright:
+            cands.append(("step", orient, bright))
+        dark = _two_lines(reg)
+        if dark:
+            cands.append(("outer", orient, dark))
     if not cands:
         raise RuntimeError(
-            "Auto-calibrate could not find two clear dark edge-lines in the left "
+            "Auto-calibrate could not find two clear block edges in the left "
             "third (most scan lines show fewer than two). Reposition so BOTH "
             "block edges are inside the frame (in the left third) with clear "
             "space between them, then re-capture -- or use the manual ROI "
             "'Calibrate Scale'."
         )
-    orient, (i1, i2, _) = max(cands, key=lambda c: c[1][2])   # more supporting lines
+    fit_mode, orient, (i1, i2, _) = max(cands, key=lambda c: c[2][2])
     i1, i2 = int(round(i1)), int(round(i2))
     mx = max(2, int(0.04 * x_hi))
-    if orient == "h":                      # horizontal lines at rows i1, i2
+    if orient == "h":                      # horizontal edges at rows i1, i2
         return ((mx, i1 - band, x_hi - mx, i1 + band),
-                (mx, i2 - band, x_hi - mx, i2 + band))
-    my = max(2, int(0.04 * h))             # vertical lines at cols i1, i2
+                (mx, i2 - band, x_hi - mx, i2 + band),
+                fit_mode)
+    my = max(2, int(0.04 * h))             # vertical edges at cols i1, i2
     return ((i1 - band, my, i1 + band, h - my),
-            (i2 - band, my, i2 + band, h - my))
+            (i2 - band, my, i2 + band, h - my),
+            fit_mode)
 
 
 def auto_calibrate_image(image_path, ref_mm, region_frac=1.0 / 3.0, save=True):
-    """Auto ROI + outer-edge calibration from a still (no manual boxes)."""
+    """Auto ROI + block-edge calibration from a still (no manual boxes)."""
     gray = ma.load_gray(Path(image_path))
-    roi1, roi2 = auto_rois(gray, region_frac)
-    result = calibrate_from_rois(gray, roi1, roi2, ref_mm, mode="outer")
+    roi1, roi2, fit_mode = auto_rois(gray, region_frac)
+    result = calibrate_from_rois(gray, roi1, roi2, ref_mm, mode=fit_mode)
     return save_calibration(result, image_path, save_json=save)
 
 
 def measure_block_size(image_path, region_frac=1.0 / 3.0, save=True):
     """Measure the two-edge distance of a block in **mm** using the stored scale.
 
-    Auto-detects the two dark edges (left ``region_frac``, same as auto-calibrate),
-    takes the outer-edge pixel gap, and multiplies by the calibrated ``mm_per_px``.
-    Does NOT change ``calibration.json``. Writes a ``*_measured.bmp`` overlay.
+    Auto-detects the two block edges (left ``region_frac``, same as auto-calibrate),
+    takes the edge-to-edge pixel gap, and multiplies by the calibrated
+    ``mm_per_px``. Does NOT change ``calibration.json``. Writes a
+    ``*_measured.bmp`` overlay.
     """
     cal = load_calibration()
     if not cal:
@@ -379,8 +466,8 @@ def measure_block_size(image_path, region_frac=1.0 / 3.0, save=True):
     mm_per_px = float(cal["mm_per_px"])
     image_path = Path(image_path)
     gray = ma.load_gray(image_path)
-    roi1, roi2 = auto_rois(gray, region_frac)
-    result = calibrate_from_rois(gray, roi1, roi2, ref_mm=1.0, mode="outer")
+    roi1, roi2, fit_mode = auto_rois(gray, region_frac)
+    result = calibrate_from_rois(gray, roi1, roi2, ref_mm=1.0, mode=fit_mode)
     gap = result["gap_px"]
     mm = gap * mm_per_px
     result["ref_mm"] = mm            # so the connector/labels read in mm
@@ -402,7 +489,7 @@ def measure_block_size(image_path, region_frac=1.0 / 3.0, save=True):
 
 def load_calibration():
     """Return the stored calibration dict, or None if not calibrated yet."""
-    cal_path = data_root() / CALIBRATION_FILE
+    cal_path = settings_path(CALIBRATION_FILE)
     if not cal_path.exists():
         return None
     try:
@@ -420,11 +507,13 @@ def main():
                         metavar=("X0", "Y0", "X1", "Y1"), help="ROI around edge 1")
     parser.add_argument("--roi2", type=int, nargs=4, required=True,
                         metavar=("X0", "Y0", "X1", "Y1"), help="ROI around edge 2")
-    parser.add_argument("--mode", choices=("outer", "dark", "bright", "step"),
-                        default="outer",
-                        help="'outer' (default) = outer boundary of the dark "
-                             "chamfer line = true block edge; else the feature "
-                             "extremum (dark-line centre, etc.)")
+    parser.add_argument("--mode",
+                        choices=("auto", "outer", "dark", "bright", "step"),
+                        default="auto",
+                        help="'auto' (default) picks 'step' for a bright block "
+                             "edge or 'outer' for a dark chamfer line; else force "
+                             "the feature extremum (outer flank, dark-line centre, "
+                             "bright peak, or gradient step)")
     args = parser.parse_args()
 
     r = calibrate(args.image, args.roi1, args.roi2, args.ref_mm, mode=args.mode)

@@ -72,20 +72,12 @@ class VideoMixin:
         )
         self.status_var.set(f"Video saved: {Path(result['out_path']).name}")
         self.last_output_dir = Path(result["out_path"]).parent
-        self._maybe_auto_measure_after_video()
+        # End of the auto chain: start the next queued monitor event, if any.
+        self._pump_monitor_chain()
 
     def _on_video_error(self, payload):
         self.status_var.set(f"Video: {payload}")
         self._append_log(f"[Video Error] {payload}\n")
         self.video_button.configure(state=tk.NORMAL)
-        # Don't strand the capture pipeline if the video step fails.
-        self._maybe_auto_measure_after_video()
-
-    def _maybe_auto_measure_after_video(self):
-        """In the capture pipeline, measure the spray angle once the video is done.
-
-        A no-op for manual "Make Video" clicks (auto_measure_pending is False).
-        """
-        if self.auto_measure_pending:
-            self.auto_measure_pending = False
-            self._measure_injection(self.last_injection_dir)
+        # End of the auto chain: start the next queued monitor event, if any.
+        self._pump_monitor_chain()

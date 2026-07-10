@@ -7,13 +7,17 @@ modules use to get a single frame from the already-running camera thread.
 
 import queue
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
 from PIL import Image, ImageTk
 
 from hsc import capture_image
+from hsc import reference_lines
 from hsc.gui.config import ROOT
 
 
@@ -33,9 +37,22 @@ class CaptureMixin:
         self.capture_abort = threading.Event()
         self.capture_params = None
         self.preview_photo = None
-        # Capture chain flag: CAPTURE_DONE -> find injection -> make video ->
-        # measure. Stays set until the video finishes (or a step fails).
+        # Last live frame, re-rendered on pane resize so the preview always
+        # fits the window (including right after launch / maximizing).
+        self._last_preview_image = None
+        self._preview_resize_job = None
+        # Saved nozzle reference (red tip line / blue centerline / target
+        # rectangle) overlaid live on the preview so the jet can be aimed into
+        # the band while capturing. Loaded on preview start / after Set
+        # Reference; drawn only when its image_size matches the preview frame.
+        self._preview_reference = None
+        # Capture chain flag: CAPTURE_DONE -> find injection -> measure ->
+        # make video. Stays set until measurement finishes (or a step fails).
         self.auto_measure_pending = False
+        # Wall-clock start of the find-injection -> measure pipeline; the
+        # total is logged when the auto-chained measurement finishes (for
+        # comparing the speed of different settings, e.g. smart save on/off).
+        self._pipeline_t0 = None
         # Single-still requests served by the camera worker between preview
         # frames (angle block, scale, block measure, nozzle reference, ...).
         self._still_requests = []
@@ -46,6 +63,7 @@ class CaptureMixin:
         self.camera_index_var = tk.StringVar(value="1")
         self.output_dir_var = tk.StringVar(value=str(ROOT / "captures"))
         self.ext_var = tk.StringVar(value=".bmp")
+        self.show_ref_var = tk.BooleanVar(value=True)
         self.defer_save_var = tk.BooleanVar(value=True)
         self.smart_save_var = tk.BooleanVar(value=False)
         self.timestamp_dir_var = tk.BooleanVar(value=True)
@@ -139,10 +157,23 @@ class CaptureMixin:
             return
         self._start_preview()
 
+    def _refresh_preview_reference(self):
+        """Reload the saved nozzle reference for the live-preview overlay.
+
+        Called on preview start and after Set Reference (and when the overlay
+        checkbox is toggled), so the overlay always reflects the latest saved
+        ``reference_lines.json``. Never raises into the UI callback.
+        """
+        try:
+            self._preview_reference = reference_lines.load_reference()
+        except Exception:
+            self._preview_reference = None
+
     def _start_preview(self):
         if self.camera_thread and self.camera_thread.is_alive():
             return
 
+        self._refresh_preview_reference()
         try:
             _, _, camera_index = self._validate_inputs()
             preview_args = self._build_preview_args()
@@ -206,10 +237,14 @@ class CaptureMixin:
         self.last_output_dir = Path(info["dir"])
         self.run_button.configure(state=tk.NORMAL)
         self.stop_button.configure(state=tk.DISABLED)
-        # Auto-find the injection right after a saved capture, then
-        # make the slow-motion video, then measure the spray angle.
-        if not (self.capture_params and self.capture_params.no_save):
+        # Auto-find the injection right after a saved capture, then measure
+        # the spray angle, then make the slow-motion video.
+        if self.capture_params and self.capture_params.no_save:
+            self._pipeline_t0 = None       # no chain -> no total to report
+        else:
             self.auto_measure_pending = True
+            # Timer: find-injection start -> measurement finished.
+            self._pipeline_t0 = time.perf_counter()
             if info.get("extract_result") is not None:
                 # Smart save already wrote the injection window;
                 # skip straight to the video+measure chain.
@@ -230,6 +265,7 @@ class CaptureMixin:
         self._append_log(f"[Capture Error] {payload}\n")
         self.run_button.configure(state=tk.NORMAL)
         self.stop_button.configure(state=tk.DISABLED)
+        self._pipeline_t0 = None
 
     # ------------------------------------------------------------------
     # Preview queue draining / rendering
@@ -266,6 +302,9 @@ class CaptureMixin:
                             req.event.clear()
                             for name in req.buttons:
                                 getattr(self, name).configure(state=tk.NORMAL)
+                    # Monitoring cannot continue without the camera; return
+                    # the toggle + camera buttons to idle (idempotent).
+                    self._reset_monitor_ui()
 
         except queue.Empty:
             pass
@@ -275,9 +314,24 @@ class CaptureMixin:
 
         self.after(50, self._drain_preview_queue)
 
+    def _on_preview_resize(self, _event=None):
+        """Re-fit the last frame when the preview pane is resized (debounced;
+        also fits the first frame right after launch)."""
+        if self._last_preview_image is None:
+            return
+        if self._preview_resize_job is not None:
+            self.after_cancel(self._preview_resize_job)
+
+        def refit():
+            self._preview_resize_job = None
+            self._render_preview(self._last_preview_image)
+
+        self._preview_resize_job = self.after(50, refit)
+
     def _render_preview(self, image):
         """Scale the live frame to fill the preview pane while keeping the
         exact aspect ratio and pixel content of the captured frame."""
+        self._last_preview_image = image
         avail_w = self.preview_frame.winfo_width() - 24
         avail_h = self.preview_frame.winfo_height() - 40
         if avail_w < 40 or avail_h < 40:
@@ -290,5 +344,16 @@ class CaptureMixin:
         target = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
 
         resized = image.resize(target, Image.BILINEAR)
+
+        ref = self._preview_reference
+        if (self.show_ref_var.get() and ref
+                and ref.get("image_size") == [src_w, src_h]):
+            # Draw the saved reference on the scaled frame using the SAME
+            # renderer the measured output uses, so preview and output line up.
+            # Native ref coords are scaled by the display scale here.
+            bgr = cv2.cvtColor(np.array(resized), cv2.COLOR_GRAY2BGR)
+            reference_lines.draw_reference(bgr, ref, scale=scale)
+            resized = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+
         self.preview_photo = ImageTk.PhotoImage(resized)
         self.preview_label.configure(image=self.preview_photo, text="")

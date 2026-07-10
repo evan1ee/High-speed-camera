@@ -4,6 +4,7 @@
 angle-block single-still measurement used to verify the pipeline."""
 
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
@@ -32,6 +33,9 @@ class MeasurementMixin:
 
         self.measure_start_var = tk.StringVar(value="10")
         self.measure_end_var = tk.StringVar(value="20")
+        # Auto pick: ignore from/to and measure the first run of 5 consecutive
+        # stable jet frames after the injection starts (find_stable_window).
+        self.auto_pick_var = tk.BooleanVar(value=False)
         self.line_len_var = tk.StringVar(value="Full")
         # A/B switch: measure with the benchmark-gated V2 edge-detection set
         # (erf edge model + pre-onset background + trusted-edge policy).
@@ -46,6 +50,12 @@ class MeasurementMixin:
     # ------------------------------------------------------------------
     # Spray-angle measurement
     # ------------------------------------------------------------------
+    def _toggle_auto_pick(self):
+        """Grey out the Measure from/to entries while auto pick is on."""
+        state = tk.DISABLED if self.auto_pick_var.get() else tk.NORMAL
+        for entry in (self.measure_start_entry, self.measure_end_entry):
+            entry.configure(state=state)
+
     def _line_frac(self):
         """Drawn-line length as a fraction of image width (from the left), or None (full)."""
         return {"Full": None, "3/4": 0.75, "2/3": 2.0 / 3.0, "1/2": 0.5}.get(
@@ -59,6 +69,7 @@ class MeasurementMixin:
         # Manual button click (source is None): always let the user pick a
         # folder. Auto-chain after a capture passes the injection folder in.
         if source is None:
+            self._pipeline_t0 = None       # manual run: no capture total
             initial = self.last_injection_dir or (
                 INJECTION_DIR if INJECTION_DIR.exists() else ROOT
             )
@@ -80,22 +91,28 @@ class MeasurementMixin:
         except ValueError:
             start, end = 10, 20
 
+        auto_pick = bool(self.auto_pick_var.get())
         use_v2 = bool(self.edge_v2_var.get())
         edition = "V2 (erf + pre-onset bg + trusted policy)" if use_v2 else "V1 (legacy)"
+        frames_note = (
+            f"auto pick: first {measure_angle.AUTO_PICK_COUNT} consecutive stable frames"
+            if auto_pick else f"jet frames {start}-{end}"
+        )
         self._append_log(
-            f"Measuring spray angle in {source} (jet frames {start}-{end}, "
+            f"Measuring spray angle in {source} ({frames_note}, "
             f"edge detection {edition}) ...\n"
         )
         self.status_var.set("Measuring spray angle...")
         self.measure_button.configure(state=tk.DISABLED)
         self.measure_thread = threading.Thread(
             target=self._measure_worker,
-            args=(Path(source), start, end, self._line_frac(), use_v2),
+            args=(Path(source), start, end, self._line_frac(), use_v2, auto_pick),
             daemon=True,
         )
         self.measure_thread.start()
 
-    def _measure_worker(self, source, start, end, line_frac, use_v2=False):
+    def _measure_worker(self, source, start, end, line_frac, use_v2=False,
+                        auto_pick=False):
         def progress(done, total):
             self.output_queue.put(("STATUS", f"Measuring... {done}/{total}"))
 
@@ -103,7 +120,7 @@ class MeasurementMixin:
             with measure_angle.edge_v2(use_v2):
                 result = measure_angle.measure_folder(
                     source, dest_base=MEASURE_DIR, start=start, end=end,
-                    line_frac=line_frac, progress=progress,
+                    line_frac=line_frac, progress=progress, auto_pick=auto_pick,
                 )
             self.output_queue.put(("MEASURE_DONE", result))
         except Exception as exc:
@@ -130,8 +147,14 @@ class MeasurementMixin:
             f"({result.get('pooled_n', 0)} edge samples, all-frame fit)\n"
             if pooled is not None and pooled == pooled else ""
         )
+        auto_line = ""
+        if result.get("auto_pick"):
+            fallback = (" (no fully stable window found -- used the steadiest run)"
+                        if result.get("auto_pick_fallback") else "")
+            auto_line = f"  Auto pick: consecutive stable frames{fallback}\n"
         self._append_log(
             f"Spray angle measured with edge detection {edition}.\n"
+            f"{auto_line}"
             f"  Frames measured: {result['measured_count']}\n"
             f"  Angle mean/min/max: {result['mean_angle']:.2f} / "
             f"{result['min_angle']:.2f} / {result['max_angle']:.2f} deg "
@@ -150,11 +173,41 @@ class MeasurementMixin:
             f"confidence {confidence}."
         )
         self.last_output_dir = Path(result["dest_dir"])
+        # End of the timed find-injection -> measure pipeline: report the
+        # total wall time so different settings can be compared.
+        if self._pipeline_t0 is not None:
+            total = time.perf_counter() - self._pipeline_t0
+            self._pipeline_t0 = None
+            self._append_log(
+                f"Total time (find injection -> measurement finished): "
+                f"{total:.1f}s\n"
+            )
+        # Auto chain: the slow-motion video is made AFTER measurement (it is
+        # the slowest step and not part of the timed pipeline).
+        self._maybe_auto_video_after_measure()
 
     def _on_measure_error(self, payload):
         self.status_var.set(f"Measure: {payload}")
         self._append_log(f"[Measure Error] {payload}\n")
         self.measure_button.configure(state=tk.NORMAL)
+        self._pipeline_t0 = None
+        # Still make the video so a failed measurement doesn't cost the run
+        # its slow-motion record.
+        self._maybe_auto_video_after_measure()
+
+    def _maybe_auto_video_after_measure(self):
+        """In the capture pipeline, make the slow-motion video once
+        measurement is done. A no-op for manual Measure clicks
+        (auto_measure_pending is False). Monitor-mode events skip the video
+        (not wanted there) and pump the next queued event instead."""
+        if not self.auto_measure_pending:
+            return
+        self.auto_measure_pending = False
+        if self._monitor_chain_active:
+            self._monitor_chain_active = False
+            self._pump_monitor_chain()
+            return
+        self._make_video(self.last_injection_dir)
 
     # ------------------------------------------------------------------
     # Angle-block measurement (single still)
