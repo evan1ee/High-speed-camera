@@ -16,6 +16,8 @@ import tkinter as tk
 from pathlib import Path
 from types import SimpleNamespace
 
+from hsc.gui.config import PAD_AFTER, PAD_BEFORE
+
 
 class MonitorMixin:
     """Start/Stop Monitoring button, queue handlers, and the chain pump."""
@@ -59,13 +61,9 @@ class MonitorMixin:
         if self.capture_requested.is_set():
             self.status_var.set("Finish the capture first.")
             return
-        try:
-            before = max(0, int(self.before_var.get()))
-            after = max(0, int(self.after_var.get()))
-        except (ValueError, tk.TclError):
-            before, after = 30, 30
-        # Snapshot on the UI thread; the camera thread must not read Tk vars.
-        self.monitor_params = SimpleNamespace(before=before, after=after)
+        # Fixed padding (former entry fields); snapshotted here because the
+        # camera thread must not touch the UI.
+        self.monitor_params = SimpleNamespace(before=PAD_BEFORE, after=PAD_AFTER)
         # Camera must be open and grabbing; the worker picks the request up
         # on its next loop iteration (same pattern as Capture).
         if not (self.camera_thread and self.camera_thread.is_alive()):

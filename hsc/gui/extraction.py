@@ -11,7 +11,7 @@ from tkinter import filedialog
 import numpy as np
 
 from hsc import injection_extract
-from hsc.gui.config import INJECTION_DIR, ROOT
+from hsc.gui.config import INJECTION_DIR, PAD_AFTER, PAD_BEFORE, ROOT
 
 
 class ExtractionMixin:
@@ -29,14 +29,7 @@ class ExtractionMixin:
         if self.extract_thread and self.extract_thread.is_alive():
             return
 
-        try:
-            before = int(self.before_var.get())
-            after = int(self.after_var.get())
-            if before < 0 or after < 0:
-                raise ValueError
-        except ValueError:
-            self.status_var.set("Frames before/after must be >= 0 integers.")
-            return
+        before, after = PAD_BEFORE, PAD_AFTER
 
         # Manual button click (source is None): always let the user pick the
         # burst folder. The post-capture auto-chain passes the folder in.

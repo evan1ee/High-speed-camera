@@ -16,6 +16,10 @@ SCALE_DIR = MEASURE_DIR / "block"
 REFERENCE_DIR = ROOT / "reference line"
 ASPECT_PRESETS = ("1:1", "2:1", "4:3", "16:9", "320x240")
 IMAGE_EXTENSIONS = (".bmp", ".png", ".jpg", ".tif")
+# Fixed padding around a detected injection (frames kept before the onset /
+# after the end). Former "Frames before/after injection" entry fields.
+PAD_BEFORE = 30
+PAD_AFTER = 30
 
 
 def log_to_file(text):

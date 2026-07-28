@@ -14,6 +14,23 @@ from hsc import measure_block
 from hsc.gui.config import BLOCK_DIR, INJECTION_DIR, MEASURE_DIR, ROOT
 
 
+def _format_frame_lines(result):
+    """Per-frame log lines: name, angle, confidence and -- when a reference
+    rectangle exists -- the jet-inside-rectangle verdict (``, OK``/``, NG``)."""
+    conf_by_name = {
+        name: level for name, _, level in result.get("frame_confidence", [])
+    }
+    rect_by_name = dict(result.get("frame_in_rect", []))
+    lines = []
+    for name, angle in result["frames"]:
+        verdict = rect_by_name.get(name, "")
+        suffix = f", {verdict}" if verdict else ""
+        lines.append(
+            f"    {name}: {angle:.2f} deg "
+            f"[{conf_by_name.get(name, '?')}]{suffix}\n")
+    return "".join(lines)
+
+
 class MeasurementMixin:
     """Spray-angle + angle-block measurement actions and queue handlers."""
 
@@ -41,6 +58,9 @@ class MeasurementMixin:
         # (erf edge model + pre-onset background + trusted-edge policy).
         # Off = the unchanged legacy pipeline.
         self.edge_v2_var = tk.BooleanVar(value=False)
+        # Draw the yellow tip line + blue centerline on measure output images
+        # (the red rectangle is always drawn when a reference is set).
+        self.ref_lines_var = tk.BooleanVar(value=True)
 
         self.register_still_request(
             self.block_requested, "block", "BLOCK_CAPTURED", "BLOCK_ERROR",
@@ -106,13 +126,14 @@ class MeasurementMixin:
         self.measure_button.configure(state=tk.DISABLED)
         self.measure_thread = threading.Thread(
             target=self._measure_worker,
-            args=(Path(source), start, end, self._line_frac(), use_v2, auto_pick),
+            args=(Path(source), start, end, self._line_frac(), use_v2, auto_pick,
+                  bool(self.ref_lines_var.get())),
             daemon=True,
         )
         self.measure_thread.start()
 
     def _measure_worker(self, source, start, end, line_frac, use_v2=False,
-                        auto_pick=False):
+                        auto_pick=False, ref_lines=True):
         def progress(done, total):
             self.output_queue.put(("STATUS", f"Measuring... {done}/{total}"))
 
@@ -121,6 +142,7 @@ class MeasurementMixin:
                 result = measure_angle.measure_folder(
                     source, dest_base=MEASURE_DIR, start=start, end=end,
                     line_frac=line_frac, progress=progress, auto_pick=auto_pick,
+                    ref_lines=ref_lines,
                 )
             self.output_queue.put(("MEASURE_DONE", result))
         except Exception as exc:
@@ -128,13 +150,7 @@ class MeasurementMixin:
 
     def _on_measure_done(self, result):
         self.measure_button.configure(state=tk.NORMAL)
-        conf_by_name = {
-            name: level for name, _, level in result.get("frame_confidence", [])
-        }
-        lines = "".join(
-            f"    {name}: {angle:.2f} deg [{conf_by_name.get(name, '?')}]\n"
-            for name, angle in result["frames"]
-        )
+        lines = _format_frame_lines(result)
         confidence = result.get("confidence", "?")
         model = result.get("edge_model", "legacy")
         edition = "V1 (legacy)" if model == "legacy" else (

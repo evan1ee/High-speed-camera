@@ -347,7 +347,7 @@ def make_run_output_dir(base_dir, args):
     if not args.timestamp_dir:
         return base_dir.resolve()
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     aspect = (args.aspect or "custom").replace(":", "x")
     return (base_dir / f"{timestamp}_{aspect}").resolve()
 

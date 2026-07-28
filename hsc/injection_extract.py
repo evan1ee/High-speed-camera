@@ -38,7 +38,6 @@ import shutil
 import struct
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -81,7 +80,13 @@ def list_frames(source_dir):
 # Raw BMP helpers (uncompressed 8-bit)
 # ----------------------------------------------------------------------
 def _bmp_info(path):
-    """Return (pixel_offset, width, abs_height, bpp) or None if not a BMP."""
+    """Return (pixel_offset, width, abs_height, bpp, bottom_up) or None.
+
+    ``bottom_up`` is True for the standard positive-biHeight layout (rows
+    stored bottom row first -- what cv2.imwrite produces); the IMV SDK saves
+    negative-biHeight top-down files. Raw readers must flip bottom-up rows
+    after the top-down reshape or the image comes out upside down.
+    """
     try:
         with open(path, "rb") as fh:
             head = fh.read(54)
@@ -95,16 +100,19 @@ def _bmp_info(path):
         # negative/zero width would otherwise slip through as bad geometry).
         if width <= 0 or height == 0:
             return None
-        return offset, width, abs(height), bpp
+        return offset, width, abs(height), bpp, height > 0
     except OSError:
         return None
 
 
-def _read_raw_pixels(path, offset, npix, height, width):
+def _read_raw_pixels(path, offset, npix, height, width, bottom_up=False):
     data = np.fromfile(path, dtype=np.uint8)
     if data.size < offset + npix:
         raise ValueError(f"Short BMP: {path}")
-    return data[offset : offset + npix].reshape(height, width).astype(np.int16)
+    frame = data[offset : offset + npix].reshape(height, width)
+    if bottom_up:
+        frame = frame[::-1]
+    return frame.astype(np.int16)
 
 
 # ----------------------------------------------------------------------
@@ -143,7 +151,7 @@ def compute_motion_signal_raw(files, diff_thresh=25, workers=8, chunk=128, progr
     info = _bmp_info(files[0])
     if info is None or info[3] != 8:
         return None
-    offset, width, height, _ = info
+    offset, width, height, _, bottom_up = info
     npix = width * height
 
     n = len(files)
@@ -151,10 +159,12 @@ def compute_motion_signal_raw(files, diff_thresh=25, workers=8, chunk=128, progr
 
     def do_chunk(start):
         end = min(start + chunk, n)
-        prev = _read_raw_pixels(files[start - 1], offset, npix, height, width)
+        prev = _read_raw_pixels(files[start - 1], offset, npix, height, width,
+                                bottom_up)
         out = []
         for i in range(start, end):
-            cur = _read_raw_pixels(files[i], offset, npix, height, width)
+            cur = _read_raw_pixels(files[i], offset, npix, height, width,
+                                   bottom_up)
             out.append((i, float(np.count_nonzero(np.abs(cur - prev) > diff_thresh))))
             prev = cur
         return out
@@ -268,7 +278,7 @@ def raw_downsample_getter(files):
     info = _bmp_info(files[0])
     if info is None or info[3] != 8:
         return None
-    offset, width, height, _ = info
+    offset, width, height, _, bottom_up = info
     npix = width * height
     ds_shape = (
         (height + DOWNSAMPLE - 1) // DOWNSAMPLE,
@@ -281,6 +291,8 @@ def raw_downsample_getter(files):
             if data.size < offset + npix:
                 raise ValueError(f"Short BMP: {files[i]}")
             frame = data[offset : offset + npix].reshape(height, width)
+            if bottom_up:
+                frame = frame[::-1]
             return frame[::DOWNSAMPLE, ::DOWNSAMPLE].astype(np.int16)
         except (OSError, ValueError):
             # A single unreadable/truncated frame contributes nothing (mirrors
@@ -394,13 +406,19 @@ def detect_bounds_with_presence(
 
 
 def make_dest_dir(source_dir, dest_base):
-    """Build a unique destination folder named after the source run."""
+    """Build a unique destination folder named after the source run.
+
+    Run stamps are second-resolution, so a counter suffix (not another
+    timestamp, which collides with itself inside one second) keeps re-runs
+    and back-to-back monitor events apart.
+    """
     source_dir = Path(source_dir)
     dest_base = Path(dest_base)
     candidate = dest_base / source_dir.name
-    if candidate.exists():
-        stamp = datetime.now().strftime("%H%M%S")
-        candidate = dest_base / f"{source_dir.name}_{stamp}"
+    n = 2
+    while candidate.exists():
+        candidate = dest_base / f"{source_dir.name}_{n}"
+        n += 1
     return candidate
 
 

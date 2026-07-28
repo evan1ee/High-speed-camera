@@ -210,10 +210,11 @@ def load_gray(path):
     """Read a grayscale image (BMP/PNG/TIFF). Fast path for raw 8-bit BMP."""
     info = injection_extract._bmp_info(path)
     if info is not None and info[3] == 8:
-        offset, width, height, _ = info
+        offset, width, height, _, bottom_up = info
         data = np.fromfile(path, dtype=np.uint8)
         if data.size >= offset + width * height:
-            return data[offset : offset + width * height].reshape(height, width)
+            frame = data[offset : offset + width * height].reshape(height, width)
+            return frame[::-1] if bottom_up else frame
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise RuntimeError(f"Cannot read image: {path}")
@@ -745,6 +746,23 @@ def measure_frame(gray, bg=None, start_x=None, end_x=None, line_frac=None):
     }
 
 
+def jet_in_rect(result, rect):
+    """True when BOTH fitted edge lines stay inside the reference rectangle
+    over the rectangle's x-window. Lines are straight, so checking the two
+    x endpoints suffices; uses the stored axis-aligned bbox ``rect``
+    (same window `_clip_lines_to_x` draws to)."""
+    x0, y0, x1, y1 = rect
+    x_lo, x_hi = min(x0, x1), max(x0, x1)
+    y_lo, y_hi = min(y0, y1), max(y0, y1)
+    for p0, kname in (("up0", "k_upper"), ("lo0", "k_lower")):
+        k = float(result[kname])
+        b = float(result[p0][1]) - k * float(result[p0][0])
+        for x in (x_lo, x_hi):
+            if not (y_lo <= k * x + b <= y_hi):
+                return False
+    return True
+
+
 def _clip_lines_to_x(result, x_lo, x_hi):
     """Rewrite the fitted green-line endpoints so each edge line spans only the
     x-window ``[x_lo, x_hi]`` -- used to confine the drawing to the reference
@@ -814,7 +832,7 @@ def find_stable_window(spans, angles=None, count=AUTO_PICK_COUNT,
 
 def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_END,
                    start_x=None, end_x=None, line_frac=None, progress=None,
-                   auto_pick=False):
+                   auto_pick=False, ref_lines=True):
     """Measure jet frames ``start`` .. ``end`` (1-based, from the first frame
     that has a jet) and save annotated images + a CSV report.
 
@@ -949,14 +967,18 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
             r["angle"], r["angle_policy"] = resolve_angle(
                 r["angle_upper"], r["angle_lower"],
                 r["confidence_upper"], r["confidence_lower"])
-        # Confine the green jet lines to the reference rectangle's x-window.
+        # Jet-vs-rectangle verdict (before the clip, though the clip preserves
+        # the line equations): both green edges inside the red rect => OK.
+        r["in_rect"] = ""
         if has_ref and ref.get("rect"):
+            r["in_rect"] = "OK" if jet_in_rect(r, ref["rect"]) else "NG"
             rx0, _, rx1, _ = ref["rect"]
             _clip_lines_to_x(r, min(rx0, rx1), max(rx0, rx1))
         draw_scale = MEASURE_RENDER_SCALE * MEASURE_LINE_SS
         annotated = annotate(gray, r, scale=draw_scale)
         if has_ref:
-            reference_lines.draw_reference(annotated, ref, scale=draw_scale)
+            reference_lines.draw_reference(annotated, ref, scale=draw_scale,
+                                           lines=ref_lines)
         if MEASURE_LINE_SS != 1:            # downscale to output size -> thinner lines
             out_w = gray.shape[1] * MEASURE_RENDER_SCALE
             out_h = gray.shape[0] * MEASURE_RENDER_SCALE
@@ -998,7 +1020,7 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
     with open(dest_dir / "angles.csv", "w", encoding="utf-8") as fh:
         fh.write("frame,angle_deg,k_upper,k_lower,n_points,"
                  "rms_up_px,rms_lo_px,coverage,span_ratio,quality,confidence,"
-                 "q_up,q_lo,policy\n")
+                 "q_up,q_lo,policy,in_rect\n")
         for name, _, r in measured:
             fh.write(f"{name},{r['angle']:.2f},{r['k_upper']:.5f},"
                      f"{r['k_lower']:.5f},{r['n_points']},"
@@ -1006,7 +1028,7 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
                      f"{r['coverage']:.3f},{r['span_ratio']:.3f},"
                      f"{r['quality']:.0f},{r['confidence']},"
                      f"{r['quality_upper']:.0f},{r['quality_lower']:.0f},"
-                     f"{r['angle_policy']}\n")
+                     f"{r['angle_policy']},{r['in_rect']}\n")
         fh.write(f"mean,{np.mean(angles):.2f},,,,,,,,,,,,\n")
         fh.write(f"std,{angle_std:.3f},,,,,,,,,,,,\n")
         fh.write(f"trusted_mean,{trusted_mean:.2f},,,{len(trusted)},,,,,,,,,"
@@ -1040,6 +1062,7 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
         "frame_confidence": [
             (name, r["quality"], r["confidence"]) for name, _, r in measured
         ],
+        "frame_in_rect": [(name, r["in_rect"]) for name, _, r in measured],
     }
 
 
