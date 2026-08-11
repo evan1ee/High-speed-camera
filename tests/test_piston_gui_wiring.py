@@ -80,6 +80,17 @@ def test_piston_capture_rejects_a_wrong_frame_size():
     assert "raise RuntimeError(" in src
 
 
+def test_find_piston_v2_checkbox_is_wired():
+    """The V2 checkbox must actually reach extract_piston_event; a checkbox
+    that only changes a log line is worse than none."""
+    assert "piston_v2_var" in inspect.getsource(PistonMixin._init_piston_state)
+    assert '("Find piston V2", self.piston_v2_var, None)' in inspect.getsource(layout)
+    find = inspect.getsource(PistonMixin._find_piston_injection)
+    assert "self.piston_v2_var.get()" in find
+    worker = inspect.getsource(PistonMixin._piston_find_worker)
+    assert "fast=fast" in worker
+
+
 def test_dead_camera_releases_the_piston_toggle():
     assert "self._reset_piston_ui()" in inspect.getsource(capture)
 

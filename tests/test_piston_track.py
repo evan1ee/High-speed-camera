@@ -154,6 +154,34 @@ def test_detect_bounds_finds_the_moving_span():
     assert abs(end - (pre + move)) <= 5
 
 
+def test_v2_scan_finds_the_same_stroke_as_the_full_fit():
+    """Find piston V2 drops the per-frame RANSAC/TLS fit and reads in
+    parallel. It may only do that if it lands on the same window -- the whole
+    point is that the operator's result does not depend on the checkbox."""
+    frames = make_run(_stroke())
+    profile = pt.build_profile(frames)
+    fast = pt.scan_positions(frames, profile)
+    slow = pt.track(frames, profile=profile)["x"]
+
+    assert np.isfinite(fast).sum() == np.isfinite(slow).sum()
+    fast_bounds = pt.detect_piston_bounds(fast)
+    slow_bounds = pt.detect_piston_bounds(slow)
+    assert fast_bounds is not None and slow_bounds is not None
+    # Padding is 30 frames either side, so a frame or two of slack is harmless.
+    assert abs(fast_bounds[0] - slow_bounds[0]) <= 2
+    assert abs(fast_bounds[1] - slow_bounds[1]) <= 2
+
+
+def test_v2_scan_preserves_frame_order():
+    """The parallel pool must not reorder results: frame i's position has to
+    stay at index i, or the stroke lands at the wrong time."""
+    positions = _stroke(pre=5, move=40, post=5)
+    frames = make_run(positions, noise=0.0)
+    profile = pt.build_profile(frames)
+    scanned = pt.scan_positions(frames, profile, workers=4)
+    assert np.nanmax(np.abs(np.diff(scanned) - np.diff(positions))) < 0.5
+
+
 def test_no_motion_detects_no_injection():
     result = pt.track(make_run([40.0] * 60))
     assert pt.detect_piston_bounds(result["x"]) is None

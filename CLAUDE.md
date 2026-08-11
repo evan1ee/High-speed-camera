@@ -85,7 +85,8 @@ distance/speed-vs-time record of the stroke.
   this top-to-bottom order: **Initial Setup** (Cal. distance field; Calibrate Scale, Auto
   Calibrate, Measure Block, Measure Angle Block, Set Reference), **Workflow** (the checkbox
   block, wrapped 3-per-row — Smart save, Edge detection V2, Reference on preview, Auto pick
-  frames, Ref. lines on output (default ON; off = measure images get only the red rectangle,
+  frames, Find piston V2 (off = the full per-frame fit; on = `scan_positions`),
+  Ref. lines on output (default ON; off = measure images get only the red rectangle,
   no yellow tip line / blue centerline — `ref_lines` kwarg of `measure_folder`); Measure
   from/to fields; Piston FPS field (fallback only, for folders with no recorded timing);
   Find Injection, Measure, Make Video, Find Injection Piston, Measure Piston),
@@ -178,6 +179,14 @@ distance/speed-vs-time record of the stroke.
   numbers. An earlier version excluded them *and* their Savitzky–Golay neighbours, which made
   the summary quote 108.5 mm/s while the curve plainly showed 131.1 (rig run
   2026-08-07-17-41-15); the operator reads the curve, so the two must never disagree.
+  `scan_positions` is the **Find piston V2** path (`extract_piston_event(fast=True)`, GUI
+  checkbox): same stroke window, ~20x faster. Two changes, both safe because every reported
+  number is re-measured by `measure_piston` on the copied window with the full fit — (1) frames
+  are read across `SCAN_WORKERS` (8) threads, and (2) the position is the median of the per-row
+  edge columns instead of a RANSAC→TLS fit. **Do not reach for C++ here**: profiling a
+  4194-frame burst showed the 80 s was ~74 s of *serial cold disk seeks* (22.06 ms/file one at a
+  time vs 1.11 ms/file across 8 threads) plus 2.7 ms/frame of sklearn RANSAC — only ~2 s was
+  work a faster language could improve. 16 threads was slower than 8.
   `extract_piston_event` copies the padded window to
   `data\injection images\` with `piston_meta.json` (a superset of `injection_meta.json`, so the
   spray tools still read it).

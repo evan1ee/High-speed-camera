@@ -171,6 +171,26 @@ def test_measure_folder_without_calibration_still_reports_pixels(tmp_path):
     assert np.isnan(result["stroke_mm"])
 
 
+def test_speed_plot_marks_the_reported_peak(tmp_path):
+    """The peak in the summary must be visible on the curve it came from --
+    the two disagreeing once already cost a round of confusion."""
+    src = make_folder(tmp_path)
+    result = mp.measure_folder(src, dest_base=tmp_path / "measure",
+                               mm_per_px=MM_PER_PX)
+    plot = cv2.imread(
+        str(tmp_path / "measure" / src.name / mp.SPEED_PLOT), cv2.IMREAD_COLOR)
+    from hsc import piston_plot
+
+    red = np.all(np.abs(plot.astype(int) - np.array(piston_plot.MARK)) < 60,
+                 axis=2)
+    assert red.any(), "no peak marker drawn"
+    # It must be a horizontal guide across the plot, not just the label text.
+    # (Checked by extent, not by a full row: the line is anti-aliased, so most
+    # of its pixels are blended away from the pure marker colour.)
+    columns = np.flatnonzero(red.any(axis=0))
+    assert columns.max() - columns.min() > plot.shape[1] // 2
+
+
 def test_plot_helper_renders_an_image():
     from hsc import piston_plot
 

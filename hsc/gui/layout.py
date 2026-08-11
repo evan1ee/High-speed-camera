@@ -113,6 +113,7 @@ class LayoutMixin:
              self._refresh_preview_reference),
             ("Auto pick frames", self.auto_pick_var, self._toggle_auto_pick),
             ("Ref. lines on output", self.ref_lines_var, None),
+            ("Find piston V2", self.piston_v2_var, None),
         )
         for i, (text, var, command) in enumerate(checkboxes):
             row, col = divmod(i, 3)

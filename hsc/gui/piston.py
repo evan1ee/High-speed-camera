@@ -19,6 +19,7 @@ button also works standalone on a folder the operator picks.
 """
 
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
@@ -55,6 +56,9 @@ class PistonMixin:
         # Fallback frame rate for folders with no recorded timing (e.g. copied
         # by hand). Blank = use the timestamps written by Capture Piston.
         self.piston_fps_var = tk.StringVar(value="")
+        # Find Injection Piston V2: locate the stroke with the parallel scan
+        # instead of a full per-frame fit. Same window, ~20x faster.
+        self.piston_v2_var = tk.BooleanVar(value=False)
 
     # ------------------------------------------------------------------
     # Capture Piston (toggles to "Stop Piston" while the burst runs)
@@ -142,14 +146,17 @@ class PistonMixin:
         else:
             source = Path(source)
 
-        self._append_log(f"Analyzing {source} for the piston stroke...\n")
+        fast = bool(self.piston_v2_var.get())
+        self._append_log(
+            f"Analyzing {source} for the piston stroke"
+            f"{' (V2 parallel scan)' if fast else ''}...\n")
         self.status_var.set("Finding piston stroke...")
         self.piston_find_button.configure(state=tk.DISABLED)
         self.piston_find_thread = threading.Thread(
-            target=self._piston_find_worker, args=(source,), daemon=True)
+            target=self._piston_find_worker, args=(source, fast), daemon=True)
         self.piston_find_thread.start()
 
-    def _piston_find_worker(self, source):
+    def _piston_find_worker(self, source, fast=False):
         last = [0]
 
         def progress(done, total):
@@ -160,9 +167,13 @@ class PistonMixin:
                     ("STATUS", f"Finding piston stroke... {pct}%"))
 
         try:
+            started = time.perf_counter()
             result = piston_track.extract_piston_event(
                 source, dest_base=INJECTION_DIR,
-                before=PAD_BEFORE, after=PAD_AFTER, progress=progress)
+                before=PAD_BEFORE, after=PAD_AFTER, progress=progress,
+                fast=fast)
+            result["elapsed_s"] = time.perf_counter() - started
+            result["scan"] = "V2 (parallel scan)" if fast else "V1 (full fit)"
             self.output_queue.put(("PFIND_DONE", result))
         except Exception as exc:
             self.output_queue.put(("PFIND_ERROR", str(exc)))
@@ -177,6 +188,8 @@ class PistonMixin:
             f"{result['copy_end_frame']} "
             f"({result['before']} before, {result['after']} after)\n"
             f"  Travel:          {result['stroke_px']:.1f} px\n"
+            f"  Scan:            {result.get('scan', 'V1 (full fit)')} in "
+            f"{result.get('elapsed_s', float('nan')):.1f}s\n"
             f"  Saved {result['selected_count']} images to:\n"
             f"  {result['dest_dir']}\n"
         )

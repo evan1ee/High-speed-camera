@@ -346,10 +346,16 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
         dest_dir / DISTANCE_PLOT, time_ms, curve,
         title=f"Piston travel - {source_dir.name}", x_label="time (ms)",
         y_label="distance (mm)" if scale_mm > 0 else "distance (px)", mark_x=0.0)
+    # The peak is drawn on the curve it was taken from, so the number in the
+    # summary can always be checked against the picture.
+    peak_curve = peak_speed if scale_mm > 0 else (
+        float(np.max(speed[np.isfinite(speed)])) if np.isfinite(speed).any()
+        else float("nan"))
+    unit = "mm/s" if scale_mm > 0 else "px/s"
     piston_plot.save_line_plot(
         dest_dir / SPEED_PLOT, time_ms, speed,
         title=f"Piston speed - {source_dir.name}", x_label="time (ms)",
-        y_label="speed (mm/s)" if scale_mm > 0 else "speed (px/s)", mark_x=0.0)
+        y_label=f"speed ({unit})", mark_x=0.0, mark_y=peak_curve)
 
     return {
         "source_dir": str(source_dir),

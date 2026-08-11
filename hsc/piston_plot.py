@@ -22,6 +22,8 @@ AXIS = (60, 60, 60)
 GRID = (222, 222, 222)
 TEXT = (40, 40, 40)
 CURVE = (0, 150, 0)                 # BGR: green, matching the measured lines
+MARK = (40, 40, 210)                # BGR: red, for the peak-speed guide
+DASH_ON, DASH_OFF = 9, 6            # px of the dashed peak guide
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 N_TICKS = 5
 
@@ -51,6 +53,13 @@ def _ticks(lo, hi):
     return [v for v in values if lo - 1e-9 <= v <= hi + 1e-9], step
 
 
+def _dashed_hline(img, x0, x1, y, color, dash=DASH_ON, gap=DASH_OFF, thickness=1):
+    """Horizontal dashed line -- OpenCV has no dashed stroke of its own."""
+    for x in range(int(x0), int(x1), dash + gap):
+        cv2.line(img, (x, y), (min(x + dash, int(x1)), y), color, thickness,
+                 cv2.LINE_AA)
+
+
 def _limits(values):
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -65,11 +74,14 @@ def _limits(values):
 
 
 def line_plot(x, y, title="", x_label="", y_label="", width=WIDTH,
-              height=HEIGHT, color=CURVE, mark_x=None):
+              height=HEIGHT, color=CURVE, mark_x=None, mark_y=None,
+              mark_y_label=None):
     """Render ``y`` against ``x`` as a BGR image.
 
     NaN gaps in *y* break the curve rather than jumping across them.
-    *mark_x* draws a vertical guide (used for the stroke start at t=0).
+    *mark_x* draws a vertical guide (used for the stroke start at t=0);
+    *mark_y* draws a labelled horizontal guide (used for the peak speed, so
+    the number in the summary is visible on the curve it came from).
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -106,6 +118,16 @@ def line_plot(x, y, title="", x_label="", y_label="", width=WIDTH,
     if mark_x is not None and x_lo <= mark_x <= x_hi:
         px, _ = to_px(mark_x, y_lo)
         cv2.line(img, (px, MARGIN_T), (px, MARGIN_T + plot_h), (170, 170, 255), 1)
+
+    if mark_y is not None and np.isfinite(mark_y) and y_lo <= mark_y <= y_hi:
+        _, py = to_px(x_lo, mark_y)
+        _dashed_hline(img, MARGIN_L, MARGIN_L + plot_w, py, MARK)
+        # The value goes on the y axis, styled like a tick label, so it reads
+        # as "this is the level" rather than as an annotation on the curve.
+        label = mark_y_label or f"{mark_y:.1f}"
+        (tw, th), _ = cv2.getTextSize(label, FONT, 0.46, 2)
+        cv2.putText(img, label, (max(2, MARGIN_L - tw - 8), py + th // 2),
+                    FONT, 0.46, MARK, 2, cv2.LINE_AA)
 
     # Axes on top of the grid.
     cv2.rectangle(img, (MARGIN_L, MARGIN_T),
