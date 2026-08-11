@@ -201,6 +201,9 @@ class CaptureMixin:
             self.capture_abort.set()
             self.status_var.set("Aborting capture...")
             return
+        if self.piston_requested.is_set():
+            self.status_var.set("Finish the piston capture first.")
+            return
 
         try:
             params = self._build_capture_params()
@@ -290,9 +293,10 @@ class CaptureMixin:
                             req.event.clear()
                             for name in req.buttons:
                                 getattr(self, name).configure(state=tk.NORMAL)
-                    # Monitoring cannot continue without the camera; return
-                    # the toggle + camera buttons to idle (idempotent).
+                    # Monitoring / a piston burst cannot continue without the
+                    # camera; return their toggles to idle (both idempotent).
                     self._reset_monitor_ui()
+                    self._reset_piston_ui()
 
         except queue.Empty:
             pass

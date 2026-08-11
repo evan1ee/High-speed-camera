@@ -9,6 +9,7 @@ serves single-still requests registered via
 the UI thread only through ``output_queue`` / ``preview_queue``.
 """
 
+import json
 import time
 from ctypes import byref, c_void_p, string_at
 from datetime import datetime
@@ -21,6 +22,7 @@ from hsc import capture_image
 from hsc import frame_writer
 from hsc import injection_extract
 from hsc import monitor
+from hsc import piston_track
 from hsc import smart_save
 from hsc.gui.config import INJECTION_DIR
 
@@ -67,6 +69,19 @@ class CameraWorkerMixin:
                     finally:
                         self.capture_requested.clear()
                         self.capture_abort.clear()
+                    continue
+
+                # Piston mode: a plain fixed-length burst that keeps every
+                # frame and records its timestamps (see _do_piston_capture).
+                if self.piston_requested.is_set():
+                    self.piston_abort.clear()
+                    try:
+                        self._do_piston_capture(cam, sdk, self.piston_params)
+                    except Exception as exc:
+                        self.output_queue.put(("PISTON_CAPTURE_ERROR", str(exc)))
+                    finally:
+                        self.piston_requested.clear()
+                        self.piston_abort.clear()
                     continue
 
                 # Monitor mode: continuous grab + online injection detection,
@@ -297,6 +312,130 @@ class CameraWorkerMixin:
                     },
                 )
             )
+        finally:
+            for clone_frame in cloned_frames:
+                cam.IMV_ReleaseFrame(clone_frame)
+
+    def _do_piston_capture(self, cam, sdk, params):
+        """Fixed-length burst for a piston run: keep EVERY frame and record
+        each one's SDK block id + timestamp.
+
+        Deliberately separate from :meth:`_do_capture` rather than a flag
+        inside it: the spray path's detect-before-write branch keys off the
+        *jet's* motion signal, which says nothing about the piston, and keeping
+        the two loops apart means the tuned spray pipeline cannot regress when
+        this one changes. The timestamps are what make a speed curve possible
+        -- frame index is not time when the camera free-runs and can drop
+        frames (``blockId`` gaps reveal exactly that).
+        """
+        ok = sdk["IMV_OK"]
+        suffix = params.ext if params.ext.startswith(".") else f".{params.ext}"
+        capture_image.save_type_for(Path(f"frame{suffix}"), sdk)
+        stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        output_dir = injection_extract.make_dest_dir(
+            Path(f"piston_{stamp}_{params.width}x{params.height}"),
+            Path(params.burst_dir))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.output_queue.put(("STATUS", "Capturing piston..."))
+        self.output_queue.put(
+            f"Capturing piston for {params.duration:.3f}s at "
+            f"{params.width}x{params.height} -- fire the injector now.\n")
+
+        cloned_frames = []
+        ticks = []
+        block_ids = []
+        started_at = time.perf_counter()
+        deadline = started_at + params.duration
+        try:
+            while (time.perf_counter() < deadline
+                   and not self.piston_abort.is_set()):
+                frame = sdk["IMV_Frame"]()
+                if cam.IMV_GetFrame(frame, 1000) != ok:
+                    continue
+                try:
+                    # The scale calibration is made at this ROI, so a burst at
+                    # any other size would be measured against the wrong
+                    # magnification -- refuse it instead of producing mm that
+                    # look fine and are silently wrong.
+                    got = (int(frame.frameInfo.width), int(frame.frameInfo.height))
+                    if got != (params.width, params.height):
+                        raise RuntimeError(
+                            f"The camera is streaming {got[0]}x{got[1]}, but a "
+                            f"piston capture must be {params.width}x"
+                            f"{params.height} (the size the scale calibration "
+                            "was made at). Stop and restart the preview so the "
+                            "ROI is re-applied, then try again.")
+                    clone_frame = sdk["IMV_Frame"]()
+                    capture_image.check(
+                        cam.IMV_CloneFrame(frame, clone_frame), ok, "Clone frame")
+                    cloned_frames.append(clone_frame)
+                    ticks.append(int(frame.frameInfo.timeStamp))
+                    block_ids.append(int(frame.frameInfo.blockId))
+                finally:
+                    cam.IMV_ReleaseFrame(frame)
+
+            elapsed = time.perf_counter() - started_at
+            captured = len(cloned_frames)
+            if not captured:
+                raise RuntimeError(
+                    "No frames were grabbed - check the camera and lighting.")
+            fps = captured / elapsed if elapsed > 0 else 0.0
+            self.output_queue.put(
+                f"Captured {captured} frames in {elapsed:.3f}s, "
+                f"capture FPS: {fps:.1f}\n")
+
+            save_start = time.perf_counter()
+            for frame_no, clone_frame in enumerate(cloned_frames, start=1):
+                capture_image.save_frame(
+                    cam, clone_frame,
+                    capture_image.make_frame_path(
+                        output_dir, params.prefix, frame_no, suffix),
+                    sdk)
+            save_elapsed = time.perf_counter() - save_start
+
+            dropped = 0
+            if len(block_ids) >= 2 and block_ids[-1] >= block_ids[0]:
+                dropped = max(
+                    0, (block_ids[-1] - block_ids[0] + 1) - len(block_ids))
+            base = ticks[0] if ticks else 0
+            meta = {
+                "fps": fps,
+                # Per-frame SDK timestamp relative to the first frame. Nominally
+                # microseconds; the vendor wrapper does not document the tick
+                # unit, so measure_piston.resolve_timebase verifies/infers it
+                # against this measured fps before trusting it.
+                "frame_times_us": [t - base for t in ticks],
+                "captured": captured,
+                "dropped": dropped,
+                "elapsed_s": elapsed,
+                "aspect": params.aspect,
+                "width": params.width,
+                "height": params.height,
+            }
+            try:
+                (output_dir / piston_track.CAPTURE_META_NAME).write_text(
+                    json.dumps(meta), encoding="utf-8")
+            except OSError as exc:
+                self.output_queue.put(f"[Piston warning] no timing file: {exc}\n")
+            if dropped:
+                self.output_queue.put(
+                    f"[Piston warning] {dropped} frame(s) dropped by the "
+                    f"camera; timing uses the recorded timestamps.\n")
+            self.output_queue.put(
+                f"Saved {captured} frames to {output_dir} "
+                f"in {save_elapsed:.3f}s\n")
+
+            self.output_queue.put((
+                "PISTON_CAPTURE_DONE",
+                {
+                    "dir": str(output_dir),
+                    "frames": captured,
+                    "fps": fps,
+                    "dropped": dropped,
+                    "elapsed": elapsed,
+                },
+            ))
         finally:
             for clone_frame in cloned_frames:
                 cam.IMV_ReleaseFrame(clone_frame)

@@ -125,15 +125,25 @@ class LayoutMixin:
             workflow, "Measure from (Nth)", self.measure_start_var, 1, 0)
         self.measure_end_entry = self._label_entry(
             workflow, "Measure to (Nth)", self.measure_end_var, 1, 2)
+        # Piston fallback frame rate: only used for folders with no recorded
+        # timing (Capture Piston writes per-frame timestamps).
+        self._label_entry(workflow, "Piston FPS (if no meta)",
+                          self.piston_fps_var, 2, 0)
         self.extract_button = ttk.Button(
             workflow, text="Find Injection", command=self._find_injection)
         self.measure_button = ttk.Button(
             workflow, text="Measure", command=self._measure_injection)
         self.video_button = ttk.Button(
             workflow, text="Make Video", command=self._make_video)
+        self.piston_find_button = ttk.Button(
+            workflow, text="Find Injection Piston",
+            command=self._find_piston_injection)
+        self.piston_measure_button = ttk.Button(
+            workflow, text="Measure Piston", command=self._measure_piston)
         grid_buttons(workflow,
                      (self.extract_button, self.measure_button,
-                      self.video_button), 3, first_row=2)
+                      self.video_button, self.piston_find_button,
+                      self.piston_measure_button), 3, first_row=3)
 
         # Operation: what the user touches every run.
         operation = section("Operation", 4)
@@ -144,11 +154,15 @@ class LayoutMixin:
             operation, text="Capture", command=self._run_capture)
         self.monitor_button = ttk.Button(
             operation, text="Start Monitoring", command=self._toggle_monitor)
+        # Toggles to "Stop Piston" while the burst runs (_capture_piston).
+        self.piston_button = ttk.Button(
+            operation, text="Capture Piston", command=self._capture_piston)
         self.open_button = ttk.Button(
             operation, text="Open Last Folder", command=self._open_last_folder)
         grid_buttons(operation,
                      (self.preview_button, self.run_button,
-                      self.monitor_button, self.open_button), 4)
+                      self.monitor_button, self.piston_button,
+                      self.open_button), 4)
 
         log_frame = ttk.LabelFrame(root, text="Output", padding=8)
         log_frame.pack(fill=tk.X)

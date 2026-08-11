@@ -20,6 +20,12 @@ IMAGE_EXTENSIONS = (".bmp", ".png", ".jpg", ".tif")
 # after the end). Former "Frames before/after injection" entry fields.
 PAD_BEFORE = 30
 PAD_AFTER = 30
+# A piston burst is always taken at the rig's standard capture ROI: the scale
+# calibration (mm per pixel) is made at this size, so a burst at any other
+# size would be measured against the wrong magnification. Pinned here rather
+# than inherited from the aspect selector, and verified against the frames the
+# camera actually delivers (camera_worker._do_piston_capture).
+PISTON_ASPECT = "320x240"
 
 
 def log_to_file(text):

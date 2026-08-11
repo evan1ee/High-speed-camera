@@ -33,6 +33,7 @@ class MonitorMixin:
     MONITOR_DISABLED_BUTTONS = (
         "run_button", "scale_button", "autoscale_button",
         "measblock_button", "block_button", "reference_button",
+        "piston_button",
     )
 
     def _init_monitor_state(self):
@@ -58,7 +59,7 @@ class MonitorMixin:
             # Re-enabled by MONITOR_STOPPED once the worker confirms.
             self.monitor_button.configure(state=tk.DISABLED)
             return
-        if self.capture_requested.is_set():
+        if self.capture_requested.is_set() or self.piston_requested.is_set():
             self.status_var.set("Finish the capture first.")
             return
         # Fixed padding (former entry fields); snapshotted here because the

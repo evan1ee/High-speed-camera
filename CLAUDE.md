@@ -11,6 +11,31 @@ injection event from thousands of frames, and (3) measures the **spray angle** o
 Pipeline: **capture → find injection → measure angle**, chained automatically from the GUI's
 Capture button.
 
+A second, parallel pipeline measures the **piston speed**: the same camera watches the nozzle
+piston travel down the barrel while the dose is expelled (**capture piston → find injection
+piston → measure piston**, chained from the Capture Piston button), producing a
+distance/speed-vs-time record of the stroke.
+
+
+
+## Design & Implementation Principles
+
+- Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations.
+
+- Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection.
+
+- Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
+
+- Keep components modular and concerns clearly separated.
+ 
+- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
+
+- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
+
+- Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
+
+
+
 ## Module map
 
 - **`hsc/gui/`** — Tkinter GUI package, the entry point (`uv run python run_gui.py`;
@@ -21,7 +46,8 @@ Capture button.
   capture on the *same already-open camera*, so Capture is instant), `extraction.py`
   (Find Injection), `measurement.py` (Measure + Measure Angle Block), `video.py`
   (Make Video), `calibration.py` (Calibrate Scale / Auto Calibrate / Measure Block),
-  `reference.py` (Set Reference), `config.py` (shared folders + `log_to_file`),
+  `reference.py` (Set Reference), `piston.py` (Capture Piston / Find Injection Piston /
+  Measure Piston), `config.py` (shared folders + `log_to_file`),
   `selftest.py` (headless `--selftest`). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto measure → auto make slow-motion video`
   (a `Total time (find injection -> measurement finished)` line is logged when the chained
@@ -61,9 +87,21 @@ Capture button.
   block, wrapped 3-per-row — Smart save, Edge detection V2, Reference on preview, Auto pick
   frames, Ref. lines on output (default ON; off = measure images get only the red rectangle,
   no yellow tip line / blue centerline — `ref_lines` kwarg of `measure_folder`); Measure
-  from/to fields; Find Injection, Measure, Make Video), **Operation** (Stop Preview; Capture,
+  from/to fields; Piston FPS field (fallback only, for folders with no recorded timing);
+  Find Injection, Measure, Make Video, Find Injection Piston, Measure Piston),
+  **Operation** (Stop Preview; Capture,
   toggling to "Stop Capture" while a burst runs — no separate Stop button; Start Monitoring;
-  Open Last Folder).
+  Capture Piston, toggling to "Stop Piston"; Open Last Folder).
+  The **piston chain** is `PISTON_CAPTURE_DONE → find injection piston → measure piston`
+  (`gui/piston.py`, gated by `piston_chain`); no slow-motion video. Its camera side is
+  `camera_worker._do_piston_capture`, kept as a SEPARATE loop from `_do_capture` on purpose:
+  the spray path's detect-before-write branch keys off the *jet's* motion signal, which says
+  nothing about the piston, so the two stay apart and the tuned spray burst cannot regress
+  (a test asserts `_do_capture` contains no piston logic). It keeps every frame and records
+  each one's `blockId`/`timeStamp` into `piston_capture.json` — the only honest basis for a
+  speed axis, and `blockId` gaps are how dropped frames get reported. Capture / Monitor /
+  Capture Piston refuse to start while another owns the camera, and the preview `STOPPED`
+  handler calls `_reset_piston_ui()` (idempotent) alongside `_reset_monitor_ui()`.
   Fixed policies (former controls, now hardwired): `defer_save=True`, `no_save=False`,
   `timestamp_dir=True` (capture params), injection padding = `PAD_BEFORE`/`PAD_AFTER`
   (30/30, `gui/config.py`) everywhere before/after frames are needed.
@@ -99,6 +137,73 @@ Capture button.
   300-px trigger but real injections peak 6k–55k; junk ≤760 — measured). Validation tool:
   `uv run python -m hsc.monitor "data\captures\<run>" --compare` replays a recorded burst and
   checks that a kept online event's saved window covers the offline detector's window (`OK`).
+- **`hsc/piston_track.py`** — piston edge tracking (camera-free, unit-testable). The piston is a
+  **dark body on a bright barrel interior** — the inverse of the jet — so it has its own
+  detector, sharing only the line fitting with `measure_angle`. **The hard part is not finding
+  an edge, it is always finding the SAME edge**: the silhouette breaks into a rim, a reflective
+  sliver, a leading blob and a trailing skirt, and a static seal sits a few px behind the
+  resting position. Every row-local rule tried first (first dark run, then longest dark run,
+  then window tracking against the previous frame) picked a different fragment in different
+  rows or different frames, producing 25 px steps mid-stroke and ±14 px of baseline scatter —
+  all root-caused on rig run `piston_2026-08-07-15-55-38` (see the tests named for each).
+  What works, in order:
+  1. `build_profile` (once per run): temporal max/min over sampled frames → the barrel row band
+     (bright rows, `_restrict_to_body` then drops barrel rows the piston never sweeps —
+     the barrel is taller than the piston), the dark/bright levels (per-run, not per-frame Otsu,
+     whose threshold would follow the piston's changing share of the frame), and
+     **`static`**: pixels dark in EVERY frame. Those are subtracted per frame, so the seal,
+     holder and border vanish and only the MOVING piston is labelled — the same background-first
+     principle `measure_angle` uses for the jet. A pixel the piston never vacates is
+     indistinguishable from static, but the left EDGE always sweeps, so it always survives.
+  2. `refine_band` (on the STROKE frames only — at rest every row agrees and it learns nothing):
+     scores each row by how far its edge sits from the frame's median and keeps the run that
+     agrees within `AGREE_TOL`, collapsing the band onto the piston's flat face.
+  3. `edge_columns`: largest **connected** dark region (2-D, so fragments separated in one row
+     but touching in another resolve into the one object they physically are), leftmost column
+     per row, `GAP_CLOSE` horizontal closing first, parabolic gradient vertex for sub-pixel
+     (`_parabolic_offsets`, vectorised but asserted identical to
+     `measure_angle._parabolic_vertex_offset`), then RANSAC→TLS as `x = k*y + b`.
+
+  `line_distance` is the perpendicular distance between two such lines along the REFERENCE
+  line's normal at the band centre row (well-defined when they are not exactly parallel).
+  `detect_piston_bounds` derives the stroke window from the **displacement curve itself** — NOT
+  from the jet's temporal-motion signal, so mist and turbulence cannot move it — using two
+  thresholds: a coarse `MOVE_TRAVEL_FRAC`-of-observed-travel trigger that baseline wander
+  cannot fire (a sigma taken from 20 head frames fired 2700 frames early), then a walk back to
+  the noise floor for the true onset, and the mirror of that at the end (the coarse plateau
+  fits while the piston still creeps). `implausible_steps` flags frames whose step exceeds
+  `MAX_STEP_PX` — a detector identity switch, not motion. Those frames are **reported only**
+  (the CSV's `stable` column + a warning), never suppressed: `peak_speed_mm_s` is the plain
+  maximum of the `speed_mm_s` column, so the plotted curve and the summary are always the same
+  numbers. An earlier version excluded them *and* their Savitzky–Golay neighbours, which made
+  the summary quote 108.5 mm/s while the curve plainly showed 131.1 (rig run
+  2026-08-07-17-41-15); the operator reads the curve, so the two must never disagree.
+  `extract_piston_event` copies the padded window to
+  `data\injection images\` with `piston_meta.json` (a superset of `injection_meta.json`, so the
+  spray tools still read it).
+  CLI: `uv run python -m hsc.piston_track "data\captures\<run>"`.
+- **`hsc/measure_piston.py`** — per-frame green edge line + distance/speed/curves.
+  `measure_folder` writes annotated frames (native capture size, `PISTON_LINE_SS` supersample
+  then area-downscale, same thin-line trick as `measure_angle`), `piston_speed.csv`
+  (`frame,time_ms,x_px,distance_px,distance_mm,speed_mm_s,speed_m_s,k,n_points,rms_px,
+  coverage,at_border,stable` + a summary block) and `distance_time.png` / `speed_time.png` into
+  `data\measure\<run>\`. Distance is measured from the **stroke-start frame**'s line; mm come
+  from `calibrate_scale.load_calibration()` (warns when the stored `image_size` differs from the
+  frames — the mm then assume the same magnification; **no calibration ⇒ px only**, never a
+  silently wrong mm). `resolve_timebase` is the honest-time-axis rule: frame index is NOT time
+  (the camera free-runs and can drop frames), so it prefers the per-frame timestamps recorded by
+  Capture Piston — but only after **inferring their tick unit** (us/ns/ms) by agreeing with the
+  burst's measured FPS within `TIMEBASE_TOL`; timestamps that agree with nothing fall back to
+  the FPS, and with neither it raises rather than invent a plausible-looking curve.
+  **Never take the time base from the camera's `AcquisitionFrameRate`**: the rig never enables
+  `AcquisitionFrameRateEnable` (`frame_rate=None`), so the camera free-runs at its maximum and
+  that feature reports a stale stored value — it printed 525 while the bursts actually ran at
+  ~1048 fps (measured 2026-08-07). Believing it would halve every reported speed. Speed is the
+  Savitzky–Golay derivative (central difference when timestamps are unevenly spaced).
+  CLI: `uv run python -m hsc.measure_piston "<folder>" [--fps N] [--mm-per-px X]`.
+- **`hsc/piston_plot.py`** — tiny OpenCV XY line plotter (nice 1/2/5 ticks, grid, rotated y
+  label, NaN gaps break the curve). Deliberately not matplotlib: it would add tens of MB to the
+  frozen one-folder build for two plots.
 - **`hsc/frame_writer.py`** — `EventWriter`: background thread that writes a monitor event's
   BMP frames with cv2 (no SDK) + `injection_meta.json`, then reports
   `(dest_dir, ok, msg)` through a callback (→ `MONITOR_SAVED`); errors are reported, never
@@ -190,7 +295,11 @@ All user output lives under `data\` (gitignored), via `data_root()`:
   is detected, the full burst still lands in `data\captures\` first as below. **Monitor mode**
   events also land directly here as `monitor_<stamp>_<WxH>\` (with `injection_meta.json`),
   one folder per detected injection — nothing in `data\captures\`.
-- `data\measure\<run>\…` + `angles.csv` — annotated angle images and report.
+- `data\captures\piston_<timestamp>_<aspect>\…` — a **Capture Piston** burst (every frame
+  kept, plus `piston_capture.json` with the per-frame camera timestamps). Its stroke window
+  lands in `data\injection images\` like any other, with `piston_meta.json` alongside.
+- `data\measure\<run>\…` + `angles.csv` — annotated angle images and report. A piston run
+  writes `piston_speed.csv` + `distance_time.png` + `speed_time.png` here instead.
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
 
@@ -315,9 +424,10 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (123 tests: import smoke, GUI wiring/dispatch, monitor
+- Tests: `uv run python -m pytest` (175 tests: import smoke, GUI wiring/dispatch, monitor
   engine/replay/wiring, frame writer, BMP row order, smart save, synthetic wedge,
-  edge-detection V2 (erf/pre-onset/quality/pooled/toggle), calibration load, vendor layout,
+  edge-detection V2 (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed /
+  GUI wiring (synthetic strokes with exact ground truth), calibration load, vendor layout,
   data root). Compile check:
   `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.
 - Edge-detection accuracy: `uv run python -m benchmark.run_benchmark <tag>` writes

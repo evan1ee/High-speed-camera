@@ -1,0 +1,180 @@
+"""Piston distance/speed measurement: CSV, curves, and the time base.
+
+Builds a real folder of BMP frames with an exactly known stroke, so the
+reported mm and mm/s can be checked against ground truth end to end. Frames
+are written with cv2 (bottom-up BMPs), which also exercises the row-order
+flip that bit the monitor folders once before.
+"""
+
+import csv
+import json
+
+import cv2
+import numpy as np
+import pytest
+
+from hsc import measure_piston as mp
+from test_piston_track import make_frame
+
+
+MM_PER_PX = 0.05
+FPS = 1000.0
+PRE, MOVE, POST = 30, 100, 30
+STEP_PX = 1.2
+
+# Ground truth of the synthetic run below.
+STROKE_MM = MOVE * STEP_PX * MM_PER_PX          # 6.0 mm
+DURATION_MS = MOVE * 1000.0 / FPS               # 100 ms
+SPEED_MM_S = STEP_PX * MM_PER_PX * FPS          # 60 mm/s
+
+
+def _positions():
+    x0 = 40.0
+    pos = [x0] * PRE
+    pos += [x0 + STEP_PX * (i + 1) for i in range(MOVE)]
+    return pos + [pos[-1]] * POST
+
+
+def make_folder(tmp_path, meta=True, times_us=None, name="piston_run"):
+    folder = tmp_path / name
+    folder.mkdir()
+    positions = _positions()
+    for i, x in enumerate(positions):
+        frame = make_frame(edge_x=x, noise=1.0, seed=i)
+        cv2.imwrite(str(folder / f"frame_{i + 1:06d}.bmp"), frame)
+    if meta:
+        payload = {
+            "pre_frames": PRE,
+            "onset_index": PRE,
+            "copy_start": 0,
+            "copy_end": len(positions) - 1,
+            "method": "test",
+            "fps": FPS,
+            "frame_times_us": times_us,
+        }
+        (folder / "piston_meta.json").write_text(json.dumps(payload),
+                                                 encoding="utf-8")
+    return folder
+
+
+def _rows(csv_path):
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+# ------------------------------------------------------------- time base ----
+def test_timebase_uses_fps_when_no_timestamps():
+    times, source, fps = mp.resolve_timebase({"fps": 500.0}, n=10, fps=None)
+    assert source == "fps"
+    assert fps == 500.0
+    assert times[1] - times[0] == pytest.approx(1 / 500.0)
+
+
+def test_timebase_prefers_frame_timestamps():
+    stamps = [i * 1000 for i in range(10)]        # 1 ms in microseconds
+    times, source, fps = mp.resolve_timebase(
+        {"fps": 1000.0, "frame_times_us": stamps}, n=10, fps=None)
+    assert source.startswith("timestamps")
+    assert fps == pytest.approx(1000.0, rel=1e-6)
+    assert times[-1] == pytest.approx(0.009)
+
+
+@pytest.mark.parametrize("unit,scale", [("ns", 1000.0), ("ms", 0.001)])
+def test_timebase_detects_the_timestamp_unit(unit, scale):
+    """The SDK's timeStamp tick unit is undocumented; it is inferred by
+    agreeing with the burst's measured FPS instead of being assumed."""
+    stamps = [int(i * 1000 * scale) for i in range(20)]
+    times, source, fps = mp.resolve_timebase(
+        {"fps": 1000.0, "frame_times_us": stamps}, n=20, fps=None)
+    assert unit in source
+    assert fps == pytest.approx(1000.0, rel=1e-3)
+
+
+def test_timebase_rejects_nonsense_timestamps():
+    """Timestamps that disagree with the measured FPS by orders of magnitude
+    (frozen clock, wrong field) must not silently produce a wrong speed."""
+    stamps = [0] * 20
+    _times, source, fps = mp.resolve_timebase(
+        {"fps": 1000.0, "frame_times_us": stamps}, n=20, fps=None)
+    assert source == "fps"
+    assert fps == 1000.0
+
+
+def test_timebase_without_any_timing_is_an_error():
+    with pytest.raises(RuntimeError, match="frame rate"):
+        mp.resolve_timebase({}, n=10, fps=None)
+
+
+# ------------------------------------------------------------- measuring ----
+def test_measure_folder_reports_the_true_stroke(tmp_path):
+    src = make_folder(tmp_path)
+    result = mp.measure_folder(src, dest_base=tmp_path / "measure",
+                               mm_per_px=MM_PER_PX)
+
+    assert result["stroke_mm"] == pytest.approx(STROKE_MM, rel=0.02)
+    assert result["duration_ms"] == pytest.approx(DURATION_MS, abs=6.0)
+    assert result["peak_speed_mm_s"] == pytest.approx(SPEED_MM_S, rel=0.06)
+    assert result["mean_speed_mm_s"] == pytest.approx(SPEED_MM_S, rel=0.10)
+    assert result["mm_per_px"] == MM_PER_PX
+
+
+def test_measure_folder_writes_images_csv_and_curves(tmp_path):
+    src = make_folder(tmp_path)
+    result = mp.measure_folder(src, dest_base=tmp_path / "measure",
+                               mm_per_px=MM_PER_PX)
+    dest = tmp_path / "measure" / src.name
+
+    assert (dest / mp.CSV_NAME).exists()
+    assert (dest / mp.DISTANCE_PLOT).exists()
+    assert (dest / mp.SPEED_PLOT).exists()
+    images = sorted(dest.glob("frame_*.bmp"))
+    assert len(images) == PRE + MOVE + POST == result["measured_count"]
+    # Annotated output keeps the capture size and gains the green line.
+    annotated = cv2.imread(str(images[PRE + 50]), cv2.IMREAD_COLOR)
+    assert annotated.shape[:2] == (240, 320)
+    green = (annotated[:, :, 1].astype(int)
+             - annotated[:, :, 2].astype(int)) > 60
+    assert green.sum() > 20
+
+
+def test_csv_distance_matches_ground_truth(tmp_path):
+    src = make_folder(tmp_path)
+    mp.measure_folder(src, dest_base=tmp_path / "measure", mm_per_px=MM_PER_PX)
+    rows = _rows(tmp_path / "measure" / src.name / mp.CSV_NAME)
+
+    frame_rows = [r for r in rows if r["frame"].startswith("frame_")]
+    assert len(frame_rows) == PRE + MOVE + POST
+    # The reference frame is the stroke's first frame -> distance 0 there.
+    assert float(frame_rows[PRE]["distance_mm"]) == pytest.approx(0.0, abs=0.02)
+    # 50 frames into the stroke: 50 * 1.2 px * 0.05 mm/px = 3.0 mm.
+    assert float(frame_rows[PRE + 50]["distance_mm"]) == pytest.approx(
+        50 * STEP_PX * MM_PER_PX, abs=0.05)
+    assert float(frame_rows[PRE + 50]["time_ms"]) == pytest.approx(50.0, abs=0.5)
+
+
+def test_measure_folder_falls_back_to_the_fps_argument(tmp_path):
+    """A folder copied by hand (no meta) still measures, using the FPS the
+    operator supplies."""
+    src = make_folder(tmp_path, meta=False)
+    result = mp.measure_folder(src, dest_base=tmp_path / "measure",
+                               fps=FPS, mm_per_px=MM_PER_PX)
+    assert result["timebase"] == "fps"
+    assert result["peak_speed_mm_s"] == pytest.approx(SPEED_MM_S, rel=0.06)
+
+
+def test_measure_folder_without_calibration_still_reports_pixels(tmp_path):
+    src = make_folder(tmp_path)
+    result = mp.measure_folder(src, dest_base=tmp_path / "measure",
+                               mm_per_px=0.0)
+    assert result["mm_per_px"] == 0.0
+    assert result["stroke_px"] == pytest.approx(MOVE * STEP_PX, rel=0.02)
+    assert np.isnan(result["stroke_mm"])
+
+
+def test_plot_helper_renders_an_image():
+    from hsc import piston_plot
+
+    img = piston_plot.line_plot([0, 1, 2, 3], [0.0, 1.5, 3.0, 4.5],
+                                title="t", x_label="ms", y_label="mm")
+    assert img.ndim == 3 and img.shape[2] == 3
+    assert img.std() > 0        # something was actually drawn
