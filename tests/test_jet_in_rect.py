@@ -66,7 +66,7 @@ def test_measure_folder_reports_ok(tmp_path):
     out = _measure_with_ref(tmp_path, rect)
     verdicts = dict(out["frame_in_rect"])
     assert verdicts and all(v == "OK" for v in verdicts.values())
-    csv_text = next((tmp_path / "m").rglob("angles.csv")).read_text()
+    csv_text = next((tmp_path / "m").rglob("*_angles.csv")).read_text()
     assert "in_rect" in csv_text.splitlines()[0]
     assert ",OK" in csv_text
 
@@ -78,7 +78,7 @@ def test_measure_folder_reports_ng(tmp_path):
     out = _measure_with_ref(tmp_path, rect)
     verdicts = dict(out["frame_in_rect"])
     assert verdicts and all(v == "NG" for v in verdicts.values())
-    csv_text = next((tmp_path / "m").rglob("angles.csv")).read_text()
+    csv_text = next((tmp_path / "m").rglob("*_angles.csv")).read_text()
     assert ",NG" in csv_text
 
 

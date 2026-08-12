@@ -94,6 +94,7 @@ class PistonMixin:
             ext=base.ext,
             prefix=base.prefix,
             burst_dir=base.burst_dir,
+            label=base.label,
         )
         self.last_output_dir = None
         self.log_text.delete("1.0", tk.END)

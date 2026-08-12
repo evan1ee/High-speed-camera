@@ -26,5 +26,5 @@ def test_pooled_angle_close_to_truth_and_reported(tmp_path):
     assert "pooled_angle" in out and out["pooled_n"] > 0
     assert abs(out["pooled_angle"] - true_angle) <= \
         abs(out["mean_angle"] - true_angle) + 0.15
-    csv_text = (tmp_path / "m").rglob("angles.csv").__next__().read_text()
+    csv_text = (tmp_path / "m").rglob("*_angles.csv").__next__().read_text()
     assert "pooled_angle" in csv_text

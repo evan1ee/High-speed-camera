@@ -336,6 +336,18 @@ All user output lives under `data\` (gitignored), via `data_root()`:
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
 
+**Run label.** The optional "Run label" field (Capture Settings, `run_label_var`) is appended to
+every run folder — `<timestamp>_<aspect>_<label>`, `piston_…_<label>`, `monitor_…_<label>` — and
+rides from there into the injection-images and measure folders for free, because `make_dest_dir`
+names them after the source. `capture_image.safe_label` strips the characters Windows forbids,
+folds whitespace to `-`, and caps at `LABEL_MAX` (48) so the full path stays inside the 260-char
+limit; an empty/unusable label leaves names exactly as they were. **Reports are named after
+their own folder** so a file copied out of it still identifies its run:
+`<run>_speed.csv` / `<run>_distance_time.png` / `<run>_speed_time.png`
+(`measure_piston.output_path` + the `*_SUFFIX` constants), `<run>_angles.csv`
+(`measure_angle`), `<run>_slowmo.mp4` (`make_video`). Annotated frames keep
+`frame_000123.bmp` — they have to stay 1:1 with the source frames.
+
 `make_dest_dir` adds a `_2`, `_3`, … counter suffix if a destination folder already exists,
 so re-runs (and monitor events closing within the same second) don't overwrite. The `data\captures\` contents change between sessions (the user
 captures/cleans); don't assume a specific run folder exists — glob for it.

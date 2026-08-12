@@ -72,6 +72,9 @@ class LayoutMixin:
         self.roi_combo.bind("<<ComboboxSelected>>", self._on_roi_change)
         self._update_roi_hint()
 
+        # Appended to every run folder and to the report/plot/video names.
+        self._label_entry(controls, "Run label (optional)",
+                          self.run_label_var, 2, 0)
         ttk.Label(controls, text="Output base folder").grid(row=3, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(controls, textvariable=self.output_dir_var).grid(
             row=3, column=1, columnspan=2, sticky="ew", padx=(8, 8), pady=(8, 0)

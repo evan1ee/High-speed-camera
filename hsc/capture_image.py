@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -347,6 +348,33 @@ def make_frame_path(output_dir, prefix, frame_no, suffix):
     return output_dir / f"{prefix}_{frame_no:06d}{suffix}"
 
 
+#: Operator run label (injector SN, dose, ...) appended to every run folder.
+#: Capped so the full path stays comfortably inside Windows' 260-char limit --
+#: the label rides along into the injection-images and measure folders, and
+#: from there into the report file names.
+LABEL_MAX = 48
+_LABEL_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def safe_label(text):
+    """Sanitise an operator-typed run label for use inside a folder name.
+
+    Strips the characters Windows forbids in a path, folds whitespace to '-',
+    and trims separators from the ends so the label always joins cleanly onto
+    the timestamp. Returns "" for anything that sanitises to nothing, which
+    the callers treat as "no label".
+    """
+    label = _LABEL_ILLEGAL.sub("", str(text or "")).strip()
+    label = re.sub(r"\s+", "-", label)
+    return label.strip("._-")[:LABEL_MAX]
+
+
+def with_label(name, label):
+    """``name`` with the run label appended, or unchanged when there is none."""
+    clean = safe_label(label)
+    return f"{name}_{clean}" if clean else name
+
+
 def make_run_output_dir(base_dir, args):
     if args.no_save:
         return base_dir.resolve()
@@ -355,7 +383,8 @@ def make_run_output_dir(base_dir, args):
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     aspect = (args.aspect or "custom").replace(":", "x")
-    return (base_dir / f"{timestamp}_{aspect}").resolve()
+    name = with_label(f"{timestamp}_{aspect}", getattr(args, "label", ""))
+    return (base_dir / name).resolve()
 
 
 def save_frame(cam, frame, output_path, sdk):

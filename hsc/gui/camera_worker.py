@@ -332,9 +332,11 @@ class CameraWorkerMixin:
         suffix = params.ext if params.ext.startswith(".") else f".{params.ext}"
         capture_image.save_type_for(Path(f"frame{suffix}"), sdk)
         stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        run_name = capture_image.with_label(
+            f"piston_{stamp}_{params.width}x{params.height}",
+            getattr(params, "label", ""))
         output_dir = injection_extract.make_dest_dir(
-            Path(f"piston_{stamp}_{params.width}x{params.height}"),
-            Path(params.burst_dir))
+            Path(run_name), Path(params.burst_dir))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self.output_queue.put(("STATUS", "Capturing piston..."))
@@ -450,6 +452,9 @@ class CameraWorkerMixin:
         ok = sdk["IMV_OK"]
         before = params.before if params is not None else 30
         after = params.after if params is not None else 30
+        # Snapshot on the camera thread: _dispatch_monitor_event must never
+        # touch a Tk variable.
+        self.monitor_label = getattr(params, "label", "") if params else ""
         eng = monitor.MonitorEngine(before=before, after=after)
         writer = frame_writer.EventWriter(
             lambda d, saved_ok, msg: self.output_queue.put(
@@ -516,7 +521,9 @@ class CameraWorkerMixin:
         # close within the same second.
         stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         dest_dir = injection_extract.make_dest_dir(
-            Path(f"monitor_{stamp}_{w}x{h}"), INJECTION_DIR)
+            Path(capture_image.with_label(f"monitor_{stamp}_{w}x{h}",
+                                          self.monitor_label)),
+            INJECTION_DIR)
         # Create the folder NOW (cheap, once per event) so the next event's
         # make_dest_dir sees it and picks a unique name even while the
         # writer is still working through its queue.

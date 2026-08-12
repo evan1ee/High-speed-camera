@@ -166,10 +166,15 @@ def measure_block_image(image_path, dest_base=None, invert=None, line_frac=None)
     out = dest_dir / (image_path.stem + "_angle.bmp")
     cv2.imwrite(str(out), annotate(gray, result))
 
-    with open(dest_dir / "block_angles.csv", "a", encoding="utf-8") as fh:
+    # Named after its folder, like every other report. Still append-mode: this
+    # one accumulates a row per angle-block measurement rather than describing
+    # a single run.
+    csv_path = dest_dir / f"{dest_dir.name}_angles.csv"
+    with open(csv_path, "a", encoding="utf-8") as fh:
         fh.write(f"{image_path.name},{result['angle']:.3f},"
                  f"{result['k_upper']:.5f},{result['k_lower']:.5f},{result['n_points']}\n")
     result["out_path"] = str(out)
+    result["csv_path"] = str(csv_path)
     return result
 
 

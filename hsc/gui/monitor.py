@@ -41,6 +41,8 @@ class MonitorMixin:
         self.monitor_stop = threading.Event()
         self.monitor_active = False
         self.monitor_params = None
+        # Snapshot of the run label, set by the camera thread at _do_monitor.
+        self.monitor_label = ""
         # Events detected but not yet confirmed written (keyed by dest_dir).
         self._monitor_results = {}
         # Events safely on disk, awaiting their measure run (FIFO).
@@ -64,7 +66,9 @@ class MonitorMixin:
             return
         # Fixed padding (former entry fields); snapshotted here because the
         # camera thread must not touch the UI.
-        self.monitor_params = SimpleNamespace(before=PAD_BEFORE, after=PAD_AFTER)
+        self.monitor_params = SimpleNamespace(
+            before=PAD_BEFORE, after=PAD_AFTER,
+            label=self.run_label_var.get())
         # Camera must be open and grabbing; the worker picks the request up
         # on its next loop iteration (same pattern as Capture).
         if not (self.camera_thread and self.camera_thread.is_alive()):

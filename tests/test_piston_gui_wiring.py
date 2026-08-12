@@ -116,6 +116,54 @@ def test_find_piston_v2_checkbox_is_wired():
     assert "fast=fast" in worker
 
 
+def test_run_label_reaches_every_run_folder():
+    """The operator's label (injector SN, dose) rides into the burst folder,
+    and from there into injection/measure via make_dest_dir."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from hsc import capture_image
+
+    args = SimpleNamespace(no_save=False, timestamp_dir=True, aspect="320x240",
+                           label="SN123 0.5mL")
+    name = capture_image.make_run_output_dir(Path("base"), args).name
+    assert name.endswith("_SN123-0.5mL"), name
+    assert "320x240" in name
+
+    # No label -> unchanged, so existing folders keep their shape.
+    args.label = ""
+    assert capture_image.make_run_output_dir(Path("base"), args).name.endswith(
+        "_320x240")
+
+
+def test_run_label_is_sanitised_for_windows_paths():
+    from hsc import capture_image
+
+    assert capture_image.safe_label(r'SN<1>:"2"/3\4|5?6*7') == "SN1234567"
+    assert capture_image.safe_label("  spaced  out  ") == "spaced-out"
+    assert capture_image.safe_label("...") == ""
+    assert capture_image.safe_label(None) == ""
+    assert len(capture_image.safe_label("x" * 200)) == capture_image.LABEL_MAX
+    # Piston/monitor folder names go through the same helper.
+    assert capture_image.with_label("run", "") == "run"
+    assert capture_image.with_label("run", "a b") == "run_a-b"
+
+
+def test_reports_are_named_after_their_folder():
+    """A CSV, plot or video copied out of its folder still names its run."""
+    from pathlib import Path
+
+    from hsc import measure_piston as mp
+
+    dest = Path("data/measure/piston_2026-08-12_320x240_SN1")
+    assert mp.output_path(dest, mp.CSV_SUFFIX).name == \
+        "piston_2026-08-12_320x240_SN1_speed.csv"
+    assert "dest_dir.name" in inspect.getsource(
+        __import__("hsc.measure_angle", fromlist=["measure_folder"]).measure_folder)
+    assert "source_dir.name" in inspect.getsource(
+        __import__("hsc.make_video", fromlist=["make_video"]).make_video)
+
+
 def test_dead_camera_releases_the_piston_toggle():
     assert "self._reset_piston_ui()" in inspect.getsource(capture)
 

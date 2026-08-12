@@ -124,9 +124,11 @@ def test_measure_folder_writes_images_csv_and_curves(tmp_path):
                                mm_per_px=MM_PER_PX)
     dest = tmp_path / "measure" / src.name
 
-    assert (dest / mp.CSV_NAME).exists()
-    assert (dest / mp.DISTANCE_PLOT).exists()
-    assert (dest / mp.SPEED_PLOT).exists()
+    # Reports are named after their folder, so they identify their own run.
+    assert mp.output_path(dest, mp.CSV_SUFFIX).exists()
+    assert mp.output_path(dest, mp.DISTANCE_PLOT_SUFFIX).exists()
+    assert mp.output_path(dest, mp.SPEED_PLOT_SUFFIX).exists()
+    assert mp.output_path(dest, mp.CSV_SUFFIX).name.startswith(dest.name)
     images = sorted(dest.glob("frame_*.bmp"))
     assert len(images) == PRE + MOVE + POST == result["measured_count"]
     # Annotated output keeps the capture size and gains the green line.
@@ -140,7 +142,7 @@ def test_measure_folder_writes_images_csv_and_curves(tmp_path):
 def test_csv_distance_matches_ground_truth(tmp_path):
     src = make_folder(tmp_path)
     mp.measure_folder(src, dest_base=tmp_path / "measure", mm_per_px=MM_PER_PX)
-    rows = _rows(tmp_path / "measure" / src.name / mp.CSV_NAME)
+    rows = _rows(mp.output_path(tmp_path / "measure" / src.name, mp.CSV_SUFFIX))
 
     frame_rows = [r for r in rows if r["frame"].startswith("frame_")]
     assert len(frame_rows) == PRE + MOVE + POST
@@ -183,7 +185,8 @@ def test_speed_plot_marks_the_reported_peak(tmp_path):
     result = mp.measure_folder(src, dest_base=tmp_path / "measure",
                                mm_per_px=MM_PER_PX)
     plot = cv2.imread(
-        str(tmp_path / "measure" / src.name / mp.SPEED_PLOT), cv2.IMREAD_COLOR)
+        str(mp.output_path(tmp_path / "measure" / src.name,
+                           mp.SPEED_PLOT_SUFFIX)), cv2.IMREAD_COLOR)
     from hsc import piston_plot
 
     red = np.all(np.abs(plot.astype(int) - np.array(piston_plot.MARK)) < 60,

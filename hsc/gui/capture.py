@@ -63,6 +63,9 @@ class CaptureMixin:
 
         self.duration_var = tk.StringVar(value="4.0")
         self.aspect_var = tk.StringVar(value=DEFAULT_ROI)
+        # Optional operator label (injector SN, dose, ...) appended to every
+        # run folder, and from there to the report/plot/video file names.
+        self.run_label_var = tk.StringVar(value="")
         self.exposure_var = tk.StringVar(value="500")
         self.camera_index_var = tk.StringVar(value="1")
         # The data root: captures\, injection images\, measure\ live under it.
@@ -136,6 +139,7 @@ class CaptureMixin:
             defer_save=True,
             smart_save=self.smart_save_var.get(),
             timestamp_dir=True,
+            label=self.run_label_var.get(),
             aspect=self.aspect_var.get(),
             width=width,
             height=height,

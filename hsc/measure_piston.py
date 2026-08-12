@@ -40,9 +40,18 @@ from hsc import piston_track
 
 
 DEST_FOLDER_NAME = "measure"
-CSV_NAME = "piston_speed.csv"
-DISTANCE_PLOT = "distance_time.png"
-SPEED_PLOT = "speed_time.png"
+#: Reports are named after their own folder, so a CSV or plot copied out of it
+#: (into a report, an email, a shared drive) still says which run it came from
+#: -- including the operator's run label, which rides along in the folder name.
+CSV_SUFFIX = "_speed.csv"
+DISTANCE_PLOT_SUFFIX = "_distance_time.png"
+SPEED_PLOT_SUFFIX = "_speed_time.png"
+
+
+def output_path(dest_dir, suffix):
+    """Path of a report file named after *dest_dir*."""
+    dest_dir = Path(dest_dir)
+    return dest_dir / f"{dest_dir.name}{suffix}"
 
 SMOOTH_WINDOW = 15         # Savitzky-Golay window for the speed derivative
 SMOOTH_POLY = 2
@@ -332,7 +341,8 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
                 interpolation=cv2.INTER_AREA)
         cv2.imwrite(str(dest_dir / path.name), image)
 
-    _write_csv(dest_dir / CSV_NAME, files, times_rel, tracked["x"], distance_px,
+    _write_csv(output_path(dest_dir, CSV_SUFFIX), files, times_rel,
+               tracked["x"], distance_px,
                distance_mm, speed_mm_s, fits, unstable,
                summary={
                    "unstable_frames": int(unstable.sum()),
@@ -352,7 +362,7 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
 
     time_ms = times_rel * 1000.0
     piston_plot.save_line_plot(
-        dest_dir / DISTANCE_PLOT, time_ms, curve,
+        output_path(dest_dir, DISTANCE_PLOT_SUFFIX), time_ms, curve,
         title=f"Piston travel - {source_dir.name}", x_label="time (ms)",
         y_label="distance (mm)" if scale_mm > 0 else "distance (px)", mark_x=0.0)
     # The peak is drawn on the curve it was taken from, so the number in the
@@ -362,14 +372,14 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
         else float("nan"))
     unit = "mm/s" if scale_mm > 0 else "px/s"
     piston_plot.save_line_plot(
-        dest_dir / SPEED_PLOT, time_ms, speed,
+        output_path(dest_dir, SPEED_PLOT_SUFFIX), time_ms, speed,
         title=f"Piston speed - {source_dir.name}", x_label="time (ms)",
         y_label=f"speed ({unit})", mark_x=0.0, mark_y=peak_curve)
 
     return {
         "source_dir": str(source_dir),
         "dest_dir": str(dest_dir),
-        "csv_path": str(dest_dir / CSV_NAME),
+        "csv_path": str(output_path(dest_dir, CSV_SUFFIX)),
         "measured_count": len(files),
         "missing_count": missing,
         "border_count": len(border),

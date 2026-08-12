@@ -75,8 +75,10 @@ def make_video(source_dir, fps=VIDEO_FPS, progress=None):
     first = _read_bgr(files[0])
     h, w = first.shape[:2]
 
-    # Write the video as a single file directly inside the selected folder.
-    base = source_dir / VIDEO_STEM
+    # Write the video as a single file directly inside the selected folder,
+    # named after that folder (which carries the operator's run label) so the
+    # clip still identifies its run once copied out.
+    base = source_dir / f"{source_dir.name}_{VIDEO_STEM}"
     writer, out_path = _open_writer(base, (w, h), fps)
     total = len(files)
     try:

@@ -1017,7 +1017,10 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
     run_score = min(s_std, s_frames)
     run_conf = confidence_level(run_score)
 
-    with open(dest_dir / "angles.csv", "w", encoding="utf-8") as fh:
+    # Named after its own folder (which carries the operator's run label), so
+    # a CSV copied out of it still says which run it came from.
+    csv_path = dest_dir / f"{dest_dir.name}_angles.csv"
+    with open(csv_path, "w", encoding="utf-8") as fh:
         fh.write("frame,angle_deg,k_upper,k_lower,n_points,"
                  "rms_up_px,rms_lo_px,coverage,span_ratio,quality,confidence,"
                  "q_up,q_lo,policy,in_rect\n")
@@ -1040,6 +1043,7 @@ def measure_folder(source_dir, dest_base=None, start=MEASURE_START, end=MEASURE_
     return {
         "source_dir": str(source_dir),
         "dest_dir": str(dest_dir),
+        "csv_path": str(csv_path),
         "measured_count": len(measured),
         "mean_angle": float(np.mean(angles)),
         "min_angle": float(np.min(angles)),
