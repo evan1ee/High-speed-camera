@@ -182,6 +182,53 @@ def test_v2_scan_preserves_frame_order():
     assert np.nanmax(np.abs(np.diff(scanned) - np.diff(positions))) < 0.5
 
 
+def test_onset_ignores_slow_baseline_drift():
+    """Over a long burst the barrel drifts further than any displacement
+    floor. The onset must be found from the LOCAL step, or the walk back runs
+    into the drift and copies hundreds of resting frames into the window --
+    rig run 2026-08-12-14-07-22 lost 194 frames (185 ms) exactly that way.
+    """
+    rng = np.random.default_rng(0)
+    n_rest, n_move = 300, 90
+    # 2 px of drift across the head: far above MOVE_ABS_PX, far below a step.
+    rest = 40.0 + np.linspace(0.0, 2.0, n_rest) + rng.normal(0, 0.05, n_rest)
+    stroke = rest[-1] + np.cumsum(np.full(n_move, 1.7))
+    x = np.concatenate([rest, stroke, np.full(40, stroke[-1])])
+
+    bounds = pt.detect_piston_bounds(x)
+    assert bounds is not None
+    start, end = bounds
+    assert abs(start - n_rest) <= 3, f"onset {start} walked back into the drift"
+    assert abs(end - (n_rest + n_move)) <= 5
+
+
+def test_coarse_to_fine_scan_matches_a_full_scan():
+    """The fast scan reads only the frames around the stroke, so it must find
+    the same window a full scan does -- including when the piston STAYS
+    displaced afterwards, which is what defeats a displacement-based bracket.
+    """
+    pre, move, post = 250, 60, 150
+    x0 = 40.0
+    positions = [x0] * pre
+    positions += [x0 + 2.0 * (i + 1) for i in range(move)]
+    positions += [positions[-1]] * post
+    frames = [make_frame(edge_x=x, noise=1.0, seed=i)
+              for i, x in enumerate(positions)]
+    profile = pt.build_profile(frames)
+
+    full = pt.scan_positions(frames, profile, stride=1)
+    fast = pt.scan_positions(frames, profile)
+
+    looked = int(np.isfinite(fast).sum())
+    assert looked < 0.6 * len(frames), f"read {looked} of {len(frames)} frames"
+
+    b_full = pt.detect_piston_bounds(full)
+    b_fast = pt.detect_piston_bounds(fast)
+    assert b_full is not None and b_fast is not None
+    assert abs(b_fast[0] - b_full[0]) <= 5
+    assert abs(b_fast[1] - b_full[1]) <= 5
+
+
 def test_no_motion_detects_no_injection():
     result = pt.track(make_run([40.0] * 60))
     assert pt.detect_piston_bounds(result["x"]) is None

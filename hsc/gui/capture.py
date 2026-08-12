@@ -18,7 +18,7 @@ from PIL import Image, ImageTk
 
 from hsc import capture_image
 from hsc import reference_lines
-from hsc.gui.config import PAD_AFTER, PAD_BEFORE, ROOT
+from hsc.gui.config import DEFAULT_ROI, PAD_AFTER, PAD_BEFORE, ROI_FPS, ROOT
 
 
 class CaptureMixin:
@@ -57,8 +57,12 @@ class CaptureMixin:
         # frames (angle block, scale, block measure, nozzle reference, ...).
         self._still_requests = []
 
+        # Set when an ROI change has stopped the camera and the preview must
+        # come back up once the worker confirms it has stopped.
+        self._restart_preview_pending = False
+
         self.duration_var = tk.StringVar(value="4.0")
-        self.aspect_var = tk.StringVar(value="320x240")
+        self.aspect_var = tk.StringVar(value=DEFAULT_ROI)
         self.exposure_var = tk.StringVar(value="500")
         self.camera_index_var = tk.StringVar(value="1")
         # The data root: captures\, injection images\, measure\ live under it.
@@ -152,6 +156,31 @@ class CaptureMixin:
             self._stop_preview()
             return
         self._start_preview()
+
+    def _update_roi_hint(self):
+        """Show the frame rate the selected ROI runs at (measured on the rig)."""
+        fps = ROI_FPS.get(self.aspect_var.get())
+        self.roi_fps_label.configure(text=f"~{fps} fps" if fps else "")
+
+    def _on_roi_change(self, _event=None):
+        """Apply a new capture ROI.
+
+        The ROI is programmed into the camera by ``configure_camera`` when the
+        grab thread starts, so a running preview is still streaming the OLD
+        size -- it has to be restarted for the change to take effect. The
+        restart is deferred until the worker confirms it has stopped (the
+        STOPPED message), rather than raced against it.
+        """
+        self._update_roi_hint()
+        if self.capture_requested.is_set() or self.piston_requested.is_set() \
+                or self.monitor_active:
+            self.status_var.set("ROI applies to the next run.")
+            return
+        if self.camera_thread and self.camera_thread.is_alive():
+            self._restart_preview_pending = True
+            self._stop_preview()
+            self.status_var.set(
+                f"Switching to {self.aspect_var.get()}...")
 
     def _refresh_preview_reference(self):
         """Reload the saved nozzle reference for the live-preview overlay.
@@ -297,6 +326,11 @@ class CaptureMixin:
                     # camera; return their toggles to idle (both idempotent).
                     self._reset_monitor_ui()
                     self._reset_piston_ui()
+                    # An ROI change stops the camera so the new size can be
+                    # programmed; bring the preview straight back up.
+                    if self._restart_preview_pending:
+                        self._restart_preview_pending = False
+                        self.after(100, self._start_preview)
 
         except queue.Empty:
             pass

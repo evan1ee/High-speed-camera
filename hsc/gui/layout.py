@@ -10,7 +10,7 @@ fields use :meth:`_label_entry` / :meth:`_label_combo`.
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from hsc.gui.config import ROOT, log_to_file
+from hsc.gui.config import CAPTURE_ROIS, ROI_FPS, ROOT, log_to_file
 
 
 class LayoutMixin:
@@ -56,8 +56,21 @@ class LayoutMixin:
         self._label_entry(controls, "Capture time (s)", self.duration_var, 0, 0)
         self._label_entry(controls, "Camera index", self.camera_index_var, 0, 2)
         self._label_entry(controls, "Exposure (us)", self.exposure_var, 1, 0)
-        # Fixed, no selector shown: aspect preset = 320x240 (aspect_var
-        # default), image type = .bmp (ext_var default).
+        # Capture ROI: a shorter frame reads out faster (see CAPTURE_ROIS).
+        # Image type is fixed at .bmp (ext_var default).
+        ttk.Label(controls, text="Capture ROI").grid(
+            row=1, column=2, sticky="w", pady=(0, 8))
+        roi_box = ttk.Frame(controls)
+        roi_box.grid(row=1, column=3, sticky="ew", padx=(8, 16), pady=(0, 8))
+        roi_box.columnconfigure(0, weight=1)
+        self.roi_combo = ttk.Combobox(
+            roi_box, textvariable=self.aspect_var, values=CAPTURE_ROIS,
+            state="readonly", width=9)
+        self.roi_combo.grid(row=0, column=0, sticky="ew")
+        self.roi_fps_label = ttk.Label(roi_box, text="")
+        self.roi_fps_label.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.roi_combo.bind("<<ComboboxSelected>>", self._on_roi_change)
+        self._update_roi_hint()
 
         ttk.Label(controls, text="Output base folder").grid(row=3, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(controls, textvariable=self.output_dir_var).grid(

@@ -20,12 +20,17 @@ IMAGE_EXTENSIONS = (".bmp", ".png", ".jpg", ".tif")
 # after the end). Former "Frames before/after injection" entry fields.
 PAD_BEFORE = 30
 PAD_AFTER = 30
-# A piston burst is always taken at the rig's standard capture ROI: the scale
-# calibration (mm per pixel) is made at this size, so a burst at any other
-# size would be measured against the wrong magnification. Pinned here rather
-# than inherited from the aspect selector, and verified against the frames the
-# camera actually delivers (camera_worker._do_piston_capture).
-PISTON_ASPECT = "320x240"
+# Selectable capture ROIs, shortest-readout last. The camera free-runs, and
+# its rate is set by how many ROWS it reads, not by exposure -- measured on the
+# rig 2026-08-12 with zero dropped frames in every case. A shorter ROI is the
+# only way to resolve the injection's opening transient, which spans ~2.9 ms:
+# barely 3 frames at 1048 fps but ~7.6 at 2624.
+#
+# mm/px is a property of the optics, so cropping does NOT change it -- the
+# stored calibration stays valid at any of these sizes.
+CAPTURE_ROIS = ("320x240", "320x120", "320x64")
+ROI_FPS = {"320x240": 1048, "320x120": 1798, "320x64": 2624}
+DEFAULT_ROI = "320x240"
 
 
 def log_to_file(text):

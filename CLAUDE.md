@@ -109,6 +109,16 @@ distance/speed-vs-time record of the stroke.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
+  The **Capture ROI** selector (`gui/config.CAPTURE_ROIS`, three options) picks the preset:
+  `320x240`/`320x120`/`320x64` → **1048/1798/2624 fps**, measured on the rig 2026-08-12 with
+  zero dropped frames. The rate is bound by **row readout, not exposure** — 100 µs, 200 µs and
+  500 µs all give the identical rate at a given height, so keep the exposure up for contrast
+  and shorten the ROI for speed. A short ROI is the only way to resolve the injection's opening
+  transient (~2.9 ms: barely 3 frames at 1048 fps, ~7.6 at 2624 — below that the reported peak
+  speed is set by the smoothing window, not by the piston). **Cropping does not change mm/px**
+  (that is optics, not sensor rows), so the stored calibration stays valid at every ROI;
+  changing the selector restarts the preview, because `configure_camera` only programs
+  Width/Height when the grab thread starts.
 - **`hsc/injection_extract.py`** — temporal-motion detection of the injection. `extract_injection`
   (disk) and `build_result` + `detect_bounds_with_presence` (used by the GUI's in-memory path).
   Motion-signal back-ends: `scan_with_cpp` → `compute_motion_signal_raw` → `compute_motion_signal`
@@ -171,8 +181,14 @@ distance/speed-vs-time record of the stroke.
   from the jet's temporal-motion signal, so mist and turbulence cannot move it — using two
   thresholds: a coarse `MOVE_TRAVEL_FRAC`-of-observed-travel trigger that baseline wander
   cannot fire (a sigma taken from 20 head frames fired 2700 frames early), then a walk back to
-  the noise floor for the true onset, and the mirror of that at the end (the coarse plateau
-  fits while the piston still creeps). `implausible_steps` flags frames whose step exceeds
+  the true onset by **local step** (`ONSET_SPEED_FRAC`), and the mirror of that at the end (the
+  coarse plateau fits while the piston still creeps). The walk back must test "is it moving
+  HERE?", never "is it far from where it started?": over thousands of frames the barrel drifts
+  further than any displacement floor, so that test never sees rest and the walk runs to
+  `MAX_ONSET_WALK` — on run 2026-08-12-14-07-22 it stopped 194 frames early and padded the
+  copied window with 185 ms of resting frames (displacement had already reached 1.03 px there,
+  vs a 0.6 px floor). The local step separates the states by an order of magnitude: 0.02 px
+  median at rest, 0.30 px worst case, against 1.73 px mid-stroke. `implausible_steps` flags frames whose step exceeds
   `MAX_STEP_PX` — a detector identity switch, not motion. Those frames are **reported only**
   (the CSV's `stable` column + a warning), never suppressed: `peak_speed_mm_s` is the plain
   maximum of the `speed_mm_s` column, so the plotted curve and the summary are always the same
@@ -180,13 +196,21 @@ distance/speed-vs-time record of the stroke.
   the summary quote 108.5 mm/s while the curve plainly showed 131.1 (rig run
   2026-08-07-17-41-15); the operator reads the curve, so the two must never disagree.
   `scan_positions` is the **Find piston V2** path (`extract_piston_event(fast=True)`, GUI
-  checkbox): same stroke window, ~20x faster. Two changes, both safe because every reported
-  number is re-measured by `measure_piston` on the copied window with the full fit — (1) frames
-  are read across `SCAN_WORKERS` (8) threads, and (2) the position is the median of the per-row
-  edge columns instead of a RANSAC→TLS fit. **Do not reach for C++ here**: profiling a
-  4194-frame burst showed the 80 s was ~74 s of *serial cold disk seeks* (22.06 ms/file one at a
-  time vs 1.11 ms/file across 8 threads) plus 2.7 ms/frame of sklearn RANSAC — only ~2 s was
-  work a faster language could improve. 16 threads was slower than 8.
+  checkbox): same stroke window, ~30x faster. Three changes, all safe because every reported
+  number is re-measured by `measure_piston` on the copied window with the full fit — (1) a
+  **coarse pass at every `SCAN_STRIDE` (8) frame brackets the stroke and only that bracket
+  (plus the head, which sets the rest baseline) is read densely**; (2) frames are read across
+  `SCAN_WORKERS` (8) threads; (3) the position is the median of the per-row edge columns
+  instead of a RANSAC→TLS fit. Validated against a full scan on all 49 rig bursts: identical
+  windows, 20% of the frames read, 271.8 s → 32.0 s.
+  `_motion_bracket` keys off the **step** between coarse samples, never the displacement: the
+  piston stays where it stopped, so a displacement test reads "moved" from the onset to the end
+  of the recording and brackets half the burst.
+  **Do not reach for C++ here**: profiling a 4194-frame burst showed the 80 s was ~74 s of
+  *serial cold disk seeks* (22.06 ms/file one at a time vs 1.11 ms/file across 8 threads) plus
+  2.7 ms/frame of sklearn RANSAC — only ~2.2 s was work a faster language could touch at all,
+  and skipping frames beat that outright (0.54 s vs the ~1.1 s a perfect rewrite could reach)
+  without a second copy of the detector to keep in step. 16 threads was slower than 8.
   `extract_piston_event` copies the padded window to
   `data\injection images\` with `piston_meta.json` (a superset of `injection_meta.json`, so the
   spray tools still read it).

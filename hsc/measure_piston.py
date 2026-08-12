@@ -239,8 +239,24 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
             "lit and in view.")
     ref_fit = fits[ref_index]
 
+    bounds = piston_track.detect_piston_bounds(tracked["x"])
+    if bounds is None:
+        warn("No clear stroke in this folder: the summary covers every frame.")
+        move_start, move_end = 0, len(files) - 1
+    else:
+        move_start, move_end = bounds
+
+    # Zero is the piston's RESTING position -- the median over the padding
+    # frames ahead of the stroke -- not the stroke-start frame's own line.
+    # The two differ: on rig run 2026-08-11-13-27-47 the rear face jumps 14 px
+    # (0.83 mm) in the single frame the pressure arrives, as the rubber plunger
+    # compresses axially, and zeroing on the frame AFTER that made every
+    # at-rest padding frame read -0.81 mm instead of 0.
+    rest_x = _rest_position(tracked["x"], move_start, ref_fit)
+    rest_ref = {"x": rest_x, "k": ref_fit["k"]}
+
     distance_px = np.array(
-        [piston_track.line_distance(ref_fit, fit, profile) for fit in fits])
+        [piston_track.line_distance(rest_ref, fit, profile) for fit in fits])
     distance_mm = (distance_px * scale_mm if scale_mm > 0
                    else np.full(distance_px.shape, np.nan))
     times_rel = times - times[ref_index]
@@ -264,13 +280,6 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
     if border:
         warn(f"The piston edge reaches the frame border in {len(border)} "
              "frame(s): the stroke may continue out of view.")
-
-    bounds = piston_track.detect_piston_bounds(tracked["x"])
-    if bounds is None:
-        warn("No clear stroke in this folder: the summary covers every frame.")
-        move_start, move_end = 0, len(files) - 1
-    else:
-        move_start, move_end = bounds
 
     # Travel at the END of the stroke, not the largest value anywhere in the
     # folder: the padding after the stroke can contain the piston leaving the
@@ -380,6 +389,17 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
         "band": profile.as_dict(),
         "warnings": warnings,
     }
+
+
+def _rest_position(xs, move_start, ref_fit):
+    """The piston's position at rest: the median over the frames ahead of the
+    stroke. Falls back to the stroke-start frame when there is no padding."""
+    xs = np.asarray(xs, dtype=float)
+    head = xs[:move_start]
+    head = head[np.isfinite(head)]
+    if head.size == 0:
+        return float(ref_fit["x"])
+    return float(np.median(head))
 
 
 def _reference_index(tracked, meta, fits):

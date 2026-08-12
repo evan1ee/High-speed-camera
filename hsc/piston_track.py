@@ -134,6 +134,19 @@ MOVE_SIGMA_K = 5.0         # ... or this many robust sigmas, whichever is larger
 MOVE_TRAVEL_FRAC = 0.05
 MOVE_CONFIRM = 3           # frames the motion must persist (rejects a spike)
 MAX_ONSET_WALK = 200       # frames; bound on the walk back to the true onset
+#: The walk back to the onset asks "is the piston moving HERE?" using the
+#: local frame-to-frame step, not "is it far from where it started?" using the
+#: displacement from the head baseline. Over thousands of frames the barrel
+#: drifts further than any sane displacement floor, so that test never sees
+#: "at rest" and the walk runs back to MAX_ONSET_WALK -- on rig run
+#: 2026-08-12-14-07-22 it stopped 194 frames early, padding the copied window
+#: with 185 ms of resting frames. The local step separates the two states by
+#: an order of magnitude: measured on that run, 0.02 px median at rest
+#: (0.30 px worst case) against 1.73 px mid-stroke.
+ONSET_SPEED_FRAC = 0.25    # of the stroke's typical step
+ONSET_STEP_FLOOR = 0.35    # px; floor for the "still" test, above rest noise
+ONSET_QUIET = 5            # consecutive still frames that end the walk
+ONSET_STEP_SAMPLE = 50     # frames after the trigger defining the stroke step
 #: A step larger than this between consecutive frames is not motion -- at
 #: ~1000 fps and ~0.06 mm/px it would be over 600 mm/s, far beyond what the
 #: piston does. It means the detector changed its mind about which part of
@@ -143,6 +156,11 @@ MAX_ONSET_WALK = 200       # frames; bound on the walk back to the true onset
 MAX_STEP_PX = 10.0
 MEDIAN_WINDOW = 5          # frames; kills single-frame position spikes
 HOLD_FRAMES = 15           # quiet frames that confirm the stroke has ended
+#: Below either of these the "stroke" is not an injection worth measuring --
+#: typically a burst that started after the shot, or one where the injector
+#: never fired. Real strokes on this rig run 90-200 frames and 150-260 px.
+MIN_STROKE_FRAMES = 20
+MIN_STROKE_PX = 15.0
 
 META_NAME = "piston_meta.json"          # written into the injection folder
 CAPTURE_META_NAME = "piston_capture.json"   # written into the burst folder
@@ -216,29 +234,39 @@ def _run_length_from(dark):
     return (columns[None, :] - last_bright)[:, ::-1]
 
 
+def _longest_true_run_per_row(flags):
+    """Length of the longest True run in each row of a 2-D mask (vectorised)."""
+    columns = np.arange(flags.shape[1])
+    last_false = np.maximum.accumulate(
+        np.where(flags, -1, columns[None, :]), axis=1)
+    return (columns[None, :] - last_false).max(axis=1)
+
+
 def _longest_dark_run_per_row(image, threshold):
     """Length of the longest run below *threshold* in each row (vectorised)."""
-    dark = image < threshold
-    columns = np.arange(image.shape[1])
-    last_bright = np.maximum.accumulate(
-        np.where(dark, -1, columns[None, :]), axis=1)
-    return (columns[None, :] - last_bright).max(axis=1)
+    return _longest_true_run_per_row(image < threshold)
 
 
 def _restrict_to_body(lo_img, run, hi_img):
     """Narrow the bright-row band to the rows the piston actually sweeps.
 
-    Rows the piston passed through are dark over a long stretch of the
-    temporal MIN image (the union of every position it held); a row holding
-    only the static holder is dark over a much shorter one. Falls back to the
-    input band whenever the result would be too thin to fit a line through.
+    A row the piston swept is dark in the temporal MIN image (it was there at
+    some point) AND bright in the temporal MAX image (it left again). Both
+    halves are needed: the holder and the rod are dark in the MIN image too,
+    and testing MIN alone hands them the band whenever the piston barely
+    moves -- on rig burst 2026-08-11-15-49-22, where the stroke had already
+    finished before the capture, that put the band on rows 4..31, the rod at
+    the top of the frame, and every green line with it. A static object is
+    dark in the MAX image as well, so requiring it to have VACATED excludes
+    it, and a run with no sweep at all now falls back to the barrel band.
     """
     lo, hi = run
     band = slice(lo, hi + 1)
     threshold = 0.5 * (float(np.percentile(lo_img[band], DARK_PCT))
                        + float(np.percentile(hi_img[band], BRIGHT_PCT)))
-    lengths = _longest_dark_run_per_row(lo_img[band], threshold)
-    if lengths.max() <= 0:
+    swept = (lo_img[band] < threshold) & (hi_img[band] >= threshold)
+    lengths = _longest_true_run_per_row(swept)
+    if lengths.max() < MIN_BODY_RUN:
         return run
     keep = _longest_run(lengths >= BAND_BODY_FRAC * lengths.max())
     if keep is None or keep[1] - keep[0] + 1 < MIN_BAND_ROWS:
@@ -544,25 +572,67 @@ def track(frames, profile=None, progress=None):
 #: 8 threads (12x). 16 threads was slower than 8, so this is the sweet spot.
 SCAN_WORKERS = 8
 SCAN_CHUNK = 64
+#: Coarse pass: look at every Nth frame to bracket the stroke, then measure
+#: only that bracket densely. A real stroke runs 90-200 frames, so it lands on
+#: 11+ coarse samples at stride 8 -- unmissable -- while the thousands of
+#: resting frames either side are never read. This beats what a C++ rewrite of
+#: the per-frame work could achieve (measured: 0.54 s coarse-to-fine vs 2.99 s
+#: scanning everything, of which only 2.20 s is work a faster language could
+#: touch at all), for none of the cost of a second copy of the detector.
+SCAN_STRIDE = 8
+COARSE_MARGIN = 4          # coarse samples of slack either side of the bracket
+COARSE_STEP_FRAC = 0.10    # of the largest coarse step; below this is not motion
+COARSE_MIN_FRAMES = 400    # shorter runs are just scanned in full
+COARSE_DENSE_GUESS = 300   # progress-bar estimate for the dense pass
 
 
-def scan_positions(files, profile, workers=SCAN_WORKERS, progress=None):
-    """Per-frame edge position for a whole burst -- the fast path.
+def _scan_indices(files, indices, profile, workers, out, progress=None,
+                  done=0, total=None):
+    """Measure the given frame indices in parallel, writing into *out*."""
+    indices = list(indices)
+    if not indices:
+        return done
+    total = total or len(indices)
 
-    Differs from :func:`track` in the two things that make that function slow,
-    both of which are safe to drop when all we want is the stroke window:
+    def position(i):
+        _rows, xs = edge_columns(_as_gray(files[i]), profile)
+        if xs.size < MIN_EDGE_POINTS:
+            return i, np.nan
+        return i, float(np.median(xs))
 
-    * frames are read **in parallel** (see SCAN_WORKERS); on a 4194-frame burst
-      this is the difference between ~86 s and ~3 s, because the serial cold
-      read alone was ~74 s of disk seeks;
-    * the position is the **median of the per-row edge columns** instead of a
-      RANSAC->TLS line fit. The fit costs 2.7 ms/frame -- 80% of the CPU -- and
-      buys nothing here: the window is decided by displacement thresholds of
-      about a pixel, and every number that ends up reported is re-measured by
-      :mod:`hsc.measure_piston` on the copied window with the full fit.
+    step = max(1, total // 100)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for i, value in pool.map(position, indices, chunksize=SCAN_CHUNK):
+            out[i] = value
+            done += 1
+            if progress is not None and (done % step == 0 or done == total):
+                progress(min(done, total), total)
+    return done
 
-    Returns a float array of the edge column per frame, NaN where no edge was
-    found.
+
+def scan_positions(files, profile, workers=SCAN_WORKERS, progress=None,
+                   stride=SCAN_STRIDE):
+    """Edge position per frame -- the fast path, coarse to fine.
+
+    Three things make this ~30x faster than :func:`track` on a full burst,
+    none of which costs accuracy where it matters:
+
+    * **Most frames are never looked at.** The piston rests for thousands of
+      frames and strokes for 90-200, so a pass at every ``stride``-th frame
+      brackets the motion, and only that bracket (plus the head, which sets
+      the rest baseline) is then measured densely. Measured on a 4201-frame
+      burst: 2.99 s scanning everything, 0.54 s coarse-to-fine.
+    * Frames are read **in parallel** (see SCAN_WORKERS) -- a cold burst
+      folder is seek-bound, 22 ms/file serially against 1.1 ms across 8 threads.
+    * The position is the **median of the per-row edge columns** rather than a
+      RANSAC->TLS fit, which costs 2.7 ms/frame and buys nothing here: the
+      window is decided by ~1 px thresholds, and every reported number is
+      re-measured by :mod:`hsc.measure_piston` on the copied window with the
+      full fit.
+
+    Frames that were not measured stay NaN -- honest about what was looked at.
+    ``detect_piston_bounds`` interpolates them, which is exact over the resting
+    stretches they cover.
     """
     files = list(files)
     n = len(files)
@@ -570,20 +640,52 @@ def scan_positions(files, profile, workers=SCAN_WORKERS, progress=None):
     if n == 0:
         return out
 
-    def position(path):
-        _rows, xs = edge_columns(_as_gray(path), profile)
-        if xs.size < MIN_EDGE_POINTS:
-            return np.nan
-        return float(np.median(xs))
+    # Short runs (and stride=1) are not worth bracketing.
+    if stride <= 1 or n <= COARSE_MIN_FRAMES:
+        _scan_indices(files, range(n), profile, workers, out, progress)
+        return out
 
-    step = max(1, n // 100)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i, value in enumerate(
-                pool.map(position, files, chunksize=SCAN_CHUNK)):
-            out[i] = value
-            if progress is not None and (i % step == 0 or i == n - 1):
-                progress(i + 1, n)
+    coarse_idx = list(range(0, n, stride))
+    head = list(range(0, min(n, BASELINE_FRAMES * 2)))
+    total = len(coarse_idx) + len(head) + COARSE_DENSE_GUESS
+    done = _scan_indices(files, coarse_idx, profile, workers, out,
+                         progress, 0, total)
+
+    bracket = _motion_bracket(out[coarse_idx])
+    if bracket is None:                       # nothing moved: coarse is enough
+        _scan_indices(files, head, profile, workers, out, progress, done, total)
+        return out
+
+    lo = max(0, (bracket[0] - COARSE_MARGIN) * stride)
+    hi = min(n - 1, (bracket[1] + COARSE_MARGIN) * stride)
+    dense = sorted(set(head) | set(range(lo, hi + 1)) - set(coarse_idx))
+    _scan_indices(files, dense, profile, workers, out, progress, done,
+                  max(total, done + len(dense)))
     return out
+
+
+def _motion_bracket(coarse):
+    """``(first, last)`` coarse indices spanning the stroke.
+
+    Keyed off the STEP between coarse samples, not the displacement from the
+    baseline. The piston does not spring back after the shot -- it stays where
+    it stopped -- so a displacement test reads "moved" for every frame from
+    the onset to the end of the recording and brackets half the burst. Motion
+    is what actually delimits the stroke, and the separation is enormous at
+    this stride: ~13 px per coarse step mid-stroke against ~0.05 px of drift.
+
+    This only has to be generous; the dense pass and the onset walk back
+    settle the exact frames.
+    """
+    series = _filled(coarse)
+    if series is None or series.size < 4:
+        return None
+    steps = np.abs(np.diff(series, prepend=series[0]))
+    moving = steps > max(MOVE_ABS_PX, COARSE_STEP_FRAC * float(steps.max()))
+    if not moving.any():
+        return None
+    hits = np.flatnonzero(moving)
+    return int(hits[0]) - 1, int(hits[-1])
 
 
 def _filled(x):
@@ -664,11 +766,24 @@ def detect_piston_bounds(x, baseline_frames=BASELINE_FRAMES,
     if confirmed is None:
         return None
 
-    # Walk back from the confirmed stroke to where the piston first left rest.
+    # Walk back from the confirmed stroke to where the piston first left rest,
+    # by local step rather than displacement from the baseline -- see
+    # ONSET_SPEED_FRAC for why the displacement test cannot do this job.
+    steps = np.abs(np.diff(series, prepend=series[0]))
+    stroke_step = float(
+        np.median(steps[confirmed : confirmed + ONSET_STEP_SAMPLE]))
+    quiet = max(ONSET_STEP_FLOOR, ONSET_SPEED_FRAC * stroke_step)
     start = confirmed
     limit = max(0, confirmed - MAX_ONSET_WALK)
-    while start > limit and displacement[start - 1] > noise_floor:
-        start -= 1
+    still = 0
+    for i in range(confirmed, limit, -1):
+        if steps[i] > quiet:
+            start = i
+            still = 0
+            continue
+        still += 1
+        if still >= ONSET_QUIET:
+            break
 
     # Finding the plateau keeps the coarse trigger: once the piston has left
     # the view the tracked position jumps around, and a noise-floor plateau
@@ -742,6 +857,18 @@ def extract_piston_event(source_dir, dest_base, before=30, after=30,
             "position -- check that the injector fired during the capture.")
 
     start, end = bounds
+    # A burst that caught only the tail of an injection (or none at all) still
+    # yields a "stroke" of a handful of frames, and every number measured from
+    # it is meaningless. Say so instead of writing a plausible-looking folder.
+    travel = float(np.nanmax(tracked["x"][start : end + 1])
+                   - np.nanmin(tracked["x"][start : end + 1])) \
+        if end > start else 0.0
+    if end - start + 1 < MIN_STROKE_FRAMES or travel < MIN_STROKE_PX:
+        raise RuntimeError(
+            f"The stroke in this burst is only {end - start + 1} frame(s) and "
+            f"{travel:.1f} px of travel -- too little to measure. The capture "
+            "probably started after the injection, or the injector did not "
+            "fire. Capture again, firing a second or so into the window.")
     copy_start = max(0, start - int(before))
     copy_end = min(len(files) - 1, end + int(after))
     selected = files[copy_start : copy_end + 1]

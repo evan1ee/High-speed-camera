@@ -144,11 +144,16 @@ def test_csv_distance_matches_ground_truth(tmp_path):
 
     frame_rows = [r for r in rows if r["frame"].startswith("frame_")]
     assert len(frame_rows) == PRE + MOVE + POST
-    # The reference frame is the stroke's first frame -> distance 0 there.
-    assert float(frame_rows[PRE]["distance_mm"]) == pytest.approx(0.0, abs=0.02)
-    # 50 frames into the stroke: 50 * 1.2 px * 0.05 mm/px = 3.0 mm.
+    # Zero is the RESTING position, so every frame before the stroke reads 0 --
+    # not the stroke-start frame, which has already travelled one step.
+    for row in frame_rows[:PRE]:
+        assert float(row["distance_mm"]) == pytest.approx(0.0, abs=0.02)
+    # The stroke's first frame has moved exactly one step from rest.
+    assert float(frame_rows[PRE]["distance_mm"]) == pytest.approx(
+        STEP_PX * MM_PER_PX, abs=0.02)
+    # 50 frames further in: 51 * 1.2 px * 0.05 mm/px.
     assert float(frame_rows[PRE + 50]["distance_mm"]) == pytest.approx(
-        50 * STEP_PX * MM_PER_PX, abs=0.05)
+        51 * STEP_PX * MM_PER_PX, abs=0.05)
     assert float(frame_rows[PRE + 50]["time_ms"]) == pytest.approx(50.0, abs=0.5)
 
 

@@ -57,18 +57,43 @@ def test_piston_capture_records_frame_timing():
     assert "CAPTURE_META_NAME" in src
 
 
-def test_piston_capture_is_pinned_to_320x240():
-    """mm/px is calibrated at this ROI, so a piston burst at any other size
-    would be measured against the wrong magnification."""
+def test_capture_rois_are_selectable_and_resolve():
+    """Three ROIs, all 320 wide -- the frame rate is bound by row readout, so
+    only the height varies."""
     from hsc import capture_image
-    from hsc.gui.config import PISTON_ASPECT
+    from hsc.gui.config import CAPTURE_ROIS, DEFAULT_ROI, ROI_FPS
 
-    assert capture_image.ASPECT_PRESETS[PISTON_ASPECT] == (320, 240)
+    assert DEFAULT_ROI in CAPTURE_ROIS
+    assert set(CAPTURE_ROIS) == set(ROI_FPS)
+    heights = []
+    for roi in CAPTURE_ROIS:
+        width, height = capture_image.ASPECT_PRESETS[roi]
+        assert width == 320
+        assert f"{width}x{height}" == roi
+        heights.append(height)
+    # Shorter ROI => higher rate.
+    rates = [ROI_FPS[r] for r in CAPTURE_ROIS]
+    assert sorted(heights, reverse=True) == heights
+    assert sorted(rates) == rates
+
+
+def test_piston_capture_uses_the_selected_roi():
     src = inspect.getsource(PistonMixin._capture_piston)
-    assert "capture_image.ASPECT_PRESETS[PISTON_ASPECT]" in src
-    assert "aspect=PISTON_ASPECT" in src
-    # Size must not come from the aspect selector.
-    assert "base.width" not in src and "base.height" not in src
+    assert "self.aspect_var.get()" in src
+    assert "capture_image.ASPECT_PRESETS[aspect]" in src
+    # ... and still records the size it asked for, so the worker can verify it.
+    assert "width=width" in src and "height=height" in src
+
+
+def test_roi_change_restarts_the_preview():
+    """The ROI is programmed when the grab thread starts, so a running preview
+    keeps streaming the old size until it is restarted."""
+    src = inspect.getsource(capture)
+    assert "_on_roi_change" in src
+    assert "_restart_preview_pending" in src
+    layout_src = inspect.getsource(layout)
+    assert "values=CAPTURE_ROIS" in layout_src
+    assert 'self.roi_combo.bind("<<ComboboxSelected>>"' in layout_src
 
 
 def test_piston_capture_rejects_a_wrong_frame_size():

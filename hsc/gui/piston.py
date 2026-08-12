@@ -29,7 +29,7 @@ from hsc import capture_image
 from hsc import measure_piston
 from hsc import piston_track
 from hsc.gui.config import (INJECTION_DIR, MEASURE_DIR, PAD_AFTER, PAD_BEFORE,
-                            PISTON_ASPECT, ROOT)
+                            ROOT)
 
 
 class PistonMixin:
@@ -79,13 +79,16 @@ class PistonMixin:
             return
 
         base = self._build_capture_params()
-        # Size is pinned to PISTON_ASPECT, not taken from the aspect selector:
-        # mm/px is calibrated at this ROI. The worker rejects the burst if the
-        # camera is actually streaming anything else.
-        width, height = capture_image.ASPECT_PRESETS[PISTON_ASPECT]
+        # The ROI comes from the Capture Settings selector. Cropping does not
+        # change mm/px (that is optics, not sensor rows), so the stored
+        # calibration stays valid at any of them -- but the worker still
+        # rejects the burst if the camera delivers a size other than the one
+        # asked for, which is the failure that WOULD corrupt the scale.
+        aspect = self.aspect_var.get()
+        width, height = capture_image.ASPECT_PRESETS[aspect]
         self.piston_params = SimpleNamespace(
             duration=duration,
-            aspect=PISTON_ASPECT,
+            aspect=aspect,
             width=width,
             height=height,
             ext=base.ext,

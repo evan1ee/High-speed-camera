@@ -50,7 +50,13 @@ ASPECT_PRESETS = {
     "2:1": (664, 332),
     "4:3": (432, 324),
     "16:9": (576, 324),
+    # The frame rate is bound by ROW READOUT, not exposure: measured on the rig
+    # 2026-08-12, 100 us / 200 us / 500 us exposure all give the same rate at a
+    # given height, so shortening the ROI is the only way to buy temporal
+    # resolution. Widths stay 320 -- only the height matters.
     "320x240": (320, 240),
+    "320x120": (320, 120),
+    "320x64": (320, 64),
 }
 
 
