@@ -28,6 +28,7 @@ from hsc.gui.measurement import MeasurementMixin
 from hsc.gui.monitor import MonitorMixin
 from hsc.gui.piston import PistonMixin
 from hsc.gui.reference import ReferenceMixin
+from hsc.gui.summary import SummaryMixin
 from hsc.gui.video import VideoMixin
 
 
@@ -39,6 +40,7 @@ class CaptureGui(
     MeasurementMixin,
     MonitorMixin,
     PistonMixin,
+    SummaryMixin,
     VideoMixin,
     CalibrationMixin,
     ReferenceMixin,
@@ -74,6 +76,7 @@ class CaptureGui(
         self._init_video_state()
         self._init_calibration_state()
         self._init_reference_state()
+        self._init_summary_state()
 
         # Uncaught Tk callback errors must not vanish (stderr is None when the
         # build is frozen/windowed) -- send the traceback to app.log.

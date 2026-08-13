@@ -168,10 +168,14 @@ class LayoutMixin:
             command=self._find_piston_injection)
         self.piston_measure_button = ttk.Button(
             workflow, text="Measure Piston", command=self._measure_piston)
+        # Batch statistics across several measured runs.
+        self.summary_button = ttk.Button(
+            workflow, text="Summary", command=self._summarize_runs)
         grid_buttons(workflow,
                      (self.extract_button, self.measure_button,
                       self.video_button, self.piston_find_button,
-                      self.piston_measure_button), 3, first_row=4)
+                      self.piston_measure_button, self.summary_button),
+                     3, first_row=4)
 
         # Operation: what the user touches every run.
         operation = section("Operation", 4)

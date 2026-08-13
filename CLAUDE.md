@@ -241,6 +241,19 @@ distance/speed-vs-time record of the stroke.
   ~1048 fps (measured 2026-08-07). Believing it would halve every reported speed. Speed is the
   Savitzky–Golay derivative (central difference when timestamps are unevenly spaced).
   CLI: `uv run python -m hsc.measure_piston "<folder>" [--fps N] [--mm-per-px X]`.
+- **`hsc/summary.py`** — descriptive statistics ACROSS measured runs (`gui/summary.py` =
+  the **Summary** button). It re-reads the summary block each run already wrote into its
+  `*_speed.csv`, so a run folder needs no extra metadata to take part and old archives can be
+  summarised retroactively. Reports n / mean / std / **cv_percent** / min / median / max for
+  stroke, peak piston speed, duration, and peak jet speed + pressure; `cv_percent` is the one
+  that answers "is this injector repeatable", which is usually why a batch was run. Writes
+  `summary_<stamp>.csv` to the **measure root**, beside the runs it describes: a per-run table,
+  then the statistics block, then any folders that were skipped **with the reason** — quietly
+  averaging fewer runs than the operator selected would be the worst outcome. Runs measured
+  before the jet columns existed still contribute their stroke and speed (per-metric `n`).
+  Tk has no native multi-folder chooser, so `gui/summary.RunPicker` lists the measured runs
+  newest-first with extended selection, offering only folders that actually hold a run.
+  CLI: `uv run python -m hsc.summary "data\measure\<run>" ... [--dest DIR]`.
 - **`hsc/piston_plot.py`** — tiny OpenCV XY line plotter (nice 1/2/5 ticks, grid, rotated y
   label, NaN gaps break the curve). Deliberately not matplotlib: it would add tens of MB to the
   frozen one-folder build for two plots.
