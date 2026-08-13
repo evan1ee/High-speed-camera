@@ -61,6 +61,9 @@ class PistonMixin:
         self.piston_measure_thread = None
         # Set while a capture-triggered run is flowing through find -> measure.
         self.piston_chain = False
+        # The measurement summary, held across the video step that follows it
+        # (see _on_video_done).
+        self._piston_status = None
         self.last_piston_dir = None
         # Fallback frame rate for folders with no recorded timing (e.g. copied
         # by hand). Blank = use the timestamps written by Capture Piston.
@@ -324,13 +327,16 @@ class PistonMixin:
             f"  Saved to:    {result['dest_dir']}\n"
         )
         if result["mm_per_px"] > 0:
-            self.status_var.set(
-                f"Piston: {result['stroke_mm']:.2f} mm in "
-                f"{result['duration_ms']:.0f} ms, peak "
-                f"{result['peak_speed_mm_s']:.0f} mm/s.")
+            summary = (f"Piston: {result['stroke_mm']:.2f} mm in "
+                       f"{result['duration_ms']:.0f} ms, peak "
+                       f"{result['peak_speed_mm_s']:.0f} mm/s.")
         else:
-            self.status_var.set(
-                f"Piston: {result['stroke_px']:.1f} px travel (not calibrated).")
+            summary = (f"Piston: {result['stroke_px']:.1f} px travel "
+                       "(not calibrated).")
+        self.status_var.set(summary)
+        # Held across the video step, which finishes after it and would
+        # otherwise leave a file name where the result should be.
+        self._piston_status = summary
         self.last_output_dir = Path(result["dest_dir"])
         # Slow-motion video of the ANNOTATED frames, written into the measure
         # folder beside the CSV and the curves. It shows the fitted line
@@ -338,6 +344,28 @@ class PistonMixin:
         # every wrong edge in this pipeline was caught by looking, not by
         # reading numbers.
         self._make_video(result["dest_dir"])
+
+    # ------------------------------------------------------------------
+    # The video runs last in the chain, but the MEASUREMENT is the result
+    # ------------------------------------------------------------------
+    def _on_video_done(self, result):
+        """Restore the piston summary after the chained video finishes.
+
+        PistonMixin precedes VideoMixin in the MRO, so this wraps the shared
+        handler: the video still logs and still sets the status for a spray
+        run or a manual Make Video, but a piston run ends with its numbers on
+        the status bar instead of a file name.
+        """
+        super()._on_video_done(result)
+        if self._piston_status:
+            self.status_var.set(self._piston_status)
+            self._piston_status = None
+
+    def _on_video_error(self, payload):
+        """A failed video keeps its error on the status bar -- that is worth
+        seeing -- but must not leave the summary pending for a later run."""
+        self._piston_status = None
+        super()._on_video_error(payload)
 
     def _on_piston_measure_error(self, payload):
         self.piston_measure_button.configure(state=tk.NORMAL)

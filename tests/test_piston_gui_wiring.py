@@ -57,6 +57,23 @@ def test_piston_capture_records_frame_timing():
     assert "CAPTURE_META_NAME" in src
 
 
+def test_measurement_survives_the_chained_video_on_the_status_bar():
+    """The video runs last but the MEASUREMENT is the result; a piston run
+    must not end with a file name where its numbers should be. The spray flow
+    and a manual Make Video keep the video's own status."""
+    mro = [c.__name__ for c in CaptureGui.__mro__]
+    assert mro.index("PistonMixin") < mro.index("VideoMixin"), \
+        "PistonMixin must precede VideoMixin to wrap _on_video_done"
+    assert CaptureGui._on_video_done is PistonMixin._on_video_done
+    src = inspect.getsource(PistonMixin._on_video_done)
+    assert "super()._on_video_done(result)" in src
+    assert "self._piston_status" in src
+    # A failed video keeps its error, and does not leave the summary pending.
+    err = inspect.getsource(PistonMixin._on_video_error)
+    assert "self._piston_status = None" in err
+    assert "super()._on_video_error(payload)" in err
+
+
 def test_capture_rois_are_selectable_and_resolve():
     """Three ROIs, all 320 wide -- the frame rate is bound by row readout, so
     only the height varies."""
