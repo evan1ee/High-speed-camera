@@ -191,10 +191,15 @@ def test_camera_owning_buttons_are_mutually_exclusive():
     assert "Finish the piston capture first." in inspect.getsource(capture)
 
 
-def test_piston_chain_skips_the_slow_motion_video():
-    """Monitor mode already proved the video is unwanted for repeat runs;
-    the piston chain is capture -> find -> measure only."""
+def test_piston_chain_runs_capture_find_measure_video():
+    """The video is built from the MEASURE folder, not the injection folder,
+    so it shows the fitted line tracking the piston -- which is how every
+    wrong edge in this pipeline was actually caught."""
     src = inspect.getsource(PistonMixin)
-    assert "_make_video" not in src
     assert "self._find_piston_injection(info[\"dir\"])" in src
     assert "self._measure_piston(self.last_piston_dir)" in src
+    assert 'self._make_video(result["dest_dir"])' in src
+    # ... and it is chained off the measurement, not the extraction.
+    done = inspect.getsource(PistonMixin._on_piston_measure_done)
+    assert "_make_video" in done
+    assert "_make_video" not in inspect.getsource(PistonMixin._on_piston_find_done)

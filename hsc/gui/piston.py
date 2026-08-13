@@ -332,6 +332,12 @@ class PistonMixin:
             self.status_var.set(
                 f"Piston: {result['stroke_px']:.1f} px travel (not calibrated).")
         self.last_output_dir = Path(result["dest_dir"])
+        # Slow-motion video of the ANNOTATED frames, written into the measure
+        # folder beside the CSV and the curves. It shows the fitted line
+        # tracking the piston, which is how the measurement gets checked --
+        # every wrong edge in this pipeline was caught by looking, not by
+        # reading numbers.
+        self._make_video(result["dest_dir"])
 
     def _on_piston_measure_error(self, payload):
         self.piston_measure_button.configure(state=tk.NORMAL)

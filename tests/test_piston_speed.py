@@ -240,6 +240,30 @@ def test_jet_columns_and_curves_are_written(tmp_path):
         result["peak_speed_mm_s"] * ratio / 1000.0, rel=1e-3)
 
 
+def test_video_ignores_the_report_plots_in_a_measure_folder(tmp_path):
+    """A measure folder holds the annotated frames AND the curves, which are a
+    different size. VideoWriter is fixed at one size, so feeding it both makes
+    every frame after the first garbage."""
+    from pathlib import Path
+
+    from hsc import make_video
+
+    src = make_folder(tmp_path)
+    mp.measure_folder(src, dest_base=tmp_path / "measure", mm_per_px=MM_PER_PX)
+    dest = tmp_path / "measure" / src.name
+
+    images = [p for p in dest.iterdir() if p.suffix.lower() in (".bmp", ".png")]
+    frames = make_video.list_frames(dest)
+    assert len(images) > len(frames), "the plots were not excluded"
+    assert {make_video._frame_size(p) for p in frames} == {(320, 240)}
+    assert all(p.name.startswith("frame_") for p in frames)
+
+    result = make_video.make_video(dest)
+    assert result["frame_count"] == len(frames)
+    assert Path(result["out_path"]).parent == dest
+    assert Path(result["out_path"]).name.startswith(dest.name)
+
+
 def test_plot_helper_renders_an_image():
     from hsc import piston_plot
 

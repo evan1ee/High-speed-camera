@@ -23,8 +23,39 @@ VIDEO_FPS = 15            # playback frame rate -> lower = slower motion
 VIDEO_STEM = "slowmo"
 
 
+def _frame_size(path):
+    """``(width, height)`` from the file header alone, or None."""
+    info = injection_extract._bmp_info(path)
+    if info is not None:
+        return info[1], info[2]
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:       # header only, no decode
+            return img.size
+    except Exception:
+        return None
+
+
 def list_frames(source_dir):
-    return injection_extract.list_frames(source_dir)
+    """The image files that form ONE sequence, largest same-size group first.
+
+    A measure folder holds the annotated frames AND the report plots, which
+    are a different size; handing those to the writer produces a video whose
+    frames after the first are garbage (VideoWriter is fixed at one size).
+    Grouping by size picks the frame sequence without depending on names.
+    """
+    files = injection_extract.list_frames(source_dir)
+    if len(files) < 2:
+        return files
+    groups = {}
+    for path in files:
+        size = _frame_size(path)
+        if size is not None:
+            groups.setdefault(size, []).append(path)
+    if not groups:
+        return files
+    return max(groups.values(), key=len)
 
 
 def _read_bgr(path):

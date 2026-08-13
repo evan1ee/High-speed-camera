@@ -175,6 +175,23 @@ def test_button_sections():
     assert 'ttk.Button(\n            operation, text="Open Last Folder"' in src
 
 
+def test_settings_column_is_scrollable():
+    """The left column keeps growing as settings are added; on a laptop screen
+    it pushed the Operation buttons and the Output log off the bottom with no
+    way to reach them."""
+    import inspect
+
+    import hsc.gui.layout as layout
+
+    src = inspect.getsource(layout)
+    assert "_scrollable_column" in src
+    assert "left = self._scrollable_column(top)" in src
+    # Wheel support, and a scrollbar only when the content overflows.
+    assert '"<MouseWheel>"' in src
+    assert "pack_forget()" in src
+    assert "yview_scroll" in src
+
+
 def test_output_base_folder_is_the_data_root():
     """The folder field shows the data root (captures/injection images/measure
     all live under it); the burst dir derives <field>\\captures from it."""

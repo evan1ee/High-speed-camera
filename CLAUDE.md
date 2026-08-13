@@ -93,8 +93,12 @@ distance/speed-vs-time record of the stroke.
   **Operation** (Stop Preview; Capture,
   toggling to "Stop Capture" while a burst runs — no separate Stop button; Start Monitoring;
   Capture Piston, toggling to "Stop Piston"; Open Last Folder).
-  The **piston chain** is `PISTON_CAPTURE_DONE → find injection piston → measure piston`
-  (`gui/piston.py`, gated by `piston_chain`); no slow-motion video. Its camera side is
+  The **piston chain** is `PISTON_CAPTURE_DONE → find injection piston → measure piston →
+  make video` (`gui/piston.py`, gated by `piston_chain`). The video is built from the
+  **measure** folder, not the injection folder, so it shows the fitted green line tracking the
+  piston — every wrong edge in this pipeline was caught by watching that, not by reading
+  numbers. `make_video.list_frames` keeps only the largest same-size group of images, because
+  a measure folder also holds the report plots and `VideoWriter` is fixed at one frame size. Its camera side is
   `camera_worker._do_piston_capture`, kept as a SEPARATE loop from `_do_capture` on purpose:
   the spray path's detect-before-write branch keys off the *jet's* motion signal, which says
   nothing about the piston, so the two stay apart and the tuned spray burst cannot regress

@@ -37,9 +37,13 @@ class LayoutMixin:
         top.columnconfigure(1, weight=1, uniform="half")
         top.rowconfigure(0, weight=1)
 
-        # Left column: settings on top, then the three button sections.
-        left = ttk.Frame(top)
-        left.grid(row=0, column=0, sticky="nsew")
+        # Left column: settings on top, then the three button sections. It is
+        # SCROLLABLE, because the column keeps growing as settings are added
+        # and on a laptop screen it eventually pushes the Operation buttons and
+        # the Output log off the bottom with no way to reach them. Scrolling
+        # the column (rather than the window) keeps the live preview and the
+        # log where they are.
+        left = self._scrollable_column(top)
 
         controls = ttk.LabelFrame(left, text="Capture Settings", padding=12)
         controls.pack(fill=tk.X)
@@ -195,6 +199,50 @@ class LayoutMixin:
         scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.configure(yscrollcommand=scrollbar.set)
+
+    def _scrollable_column(self, parent):
+        """A vertically scrollable frame in ``parent``'s grid cell (0, 0).
+
+        Returns the inner frame to pack content into. The scrollbar appears
+        only when the content is taller than the space available, so a roomy
+        screen looks exactly as it did before.
+        """
+        holder = ttk.Frame(parent)
+        holder.grid(row=0, column=0, sticky="nsew")
+        canvas = tk.Canvas(holder, highlightthickness=0, borderwidth=0)
+        bar = ttk.Scrollbar(holder, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def fit(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            needed = inner.winfo_reqheight() > canvas.winfo_height()
+            if needed and not bar.winfo_ismapped():
+                bar.pack(side=tk.RIGHT, fill=tk.Y)
+            elif not needed and bar.winfo_ismapped():
+                bar.pack_forget()
+                canvas.yview_moveto(0.0)
+
+        def stretch(event):
+            canvas.itemconfigure(window, width=event.width)
+            fit()
+
+        inner.bind("<Configure>", fit)
+        canvas.bind("<Configure>", stretch)
+
+        def wheel(event):
+            if bar.winfo_ismapped():
+                canvas.yview_scroll(-int(event.delta / 120), "units")
+
+        # Bound while the pointer is over the column, so the wheel still
+        # belongs to whatever else it is over the rest of the time.
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        self.settings_canvas = canvas
+        return inner
 
     def _label_entry(self, parent, label, variable, row, column):
         ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w", pady=(0, 8))
