@@ -28,8 +28,21 @@ PAD_AFTER = 30
 #
 # mm/px is a property of the optics, so cropping does NOT change it -- the
 # stored calibration stays valid at any of these sizes.
-CAPTURE_ROIS = ("320x240", "320x120", "320x64")
-ROI_FPS = {"320x240": 1048, "320x120": 1798, "320x64": 2624}
+#: 320x64 was measured (2624 fps) and then WITHDRAWN. It crops into the barrel
+#: -- 48 usable rows against 79 at both sizes below -- and the piston in that
+#: view is grey rather than black, with a collar that detaches mid-stroke. No
+#: single edge rule held across the stroke; the two-stage rule in piston_track
+#: (SHORT_ROI_ROWS) does, but the view is not worth the fragility for 1.5x.
+#: To use that frame rate, re-aim the camera so the barrel FILLS the short
+#: frame instead of being cropped mid-way, then add the preset back.
+CAPTURE_ROIS = ("320x240", "320x120")
+ROI_FPS = {"320x240": 1048, "320x120": 1798}
+#: Longest exposure that still fits inside the frame period, so the ROI runs at
+#: its full rate. Exceeding it costs BOTH speed and contrast: at 320x64 the
+#: default 500 us dropped the rate to 1830 fps AND lifted the piston from
+#: black (min 4) to grey (min 38, not one pixel below 30), which left the
+#: detector nothing to lock onto -- two rig runs on 2026-08-13 failed that way.
+ROI_MAX_EXPOSURE_US = {"320x240": 950, "320x120": 550}
 DEFAULT_ROI = "320x240"
 
 

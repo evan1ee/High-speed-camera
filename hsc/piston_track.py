@@ -91,6 +91,39 @@ MIN_BODY_RUN = 30          # px: narrowest black run accepted as the piston body
 #: the stroke were lost that way, while the face itself was still visible.
 MIN_BORDER_RUN = 8
 BODY_DARK_FRAC = 0.08      # of (bright - dark) above the dark level
+
+#: SHORT ROIs GET THEIR OWN EDGE DEFINITION -- deliberately not the taller
+#: ROIs' rule. A 320x64 frame is a crop INTO the barrel (48 usable rows against
+#: 79 at both 320x120 and 320x240), and the piston in it is GREY, not black:
+#: 28-38 against a barrel at 253 on rig run 2026-08-13-09-31-20. The blackness
+#: rule cannot work there -- the body straddles its own threshold, so the first
+#: run of "genuinely black" pixels begins ~35 px INSIDE the piston.
+#:
+#: Short frames instead take the VISIBLE edge: the first sustained departure
+#: from the bright barrel, which is the boundary the operator marks.
+#:
+#: The fraction has to be well BELOW the midpoint, and the reason is the collar
+#: again. Mid-stroke a row reads 253 .. 144 130 124 114 116 140 159 .. 87 61 49
+#: 40 35: a ~10 px collar dip, a recovery, then the body. A shallow threshold
+#: (0.25 -> 193) swallows dip and body as one run and reports the edge ~10 px
+#: early; 0.55 -> 120 leaves the dip too short to satisfy MIN_BODY_RUN, so it
+#: is rejected and the edge lands on the body. Verified against hand-marked
+#: frames across the stroke of run 2026-08-13-09-31-20, at rest and moving.
+#: The taller ROIs keep the blackness rule untouched.
+#: It takes TWO stages, because no single threshold works in both scene
+#: states. At rest the collar sits against the body; mid-stroke it detaches,
+#: leaving a ~10 px dip and a recovery between it and the body. Measured:
+#:   walk threshold 193 -> rest 118 (right), mid-stroke 181 (want 190)
+#:   walk threshold 120 -> rest 122 (right), mid-stroke 190 (right)
+#: So: locate the body with a DARK threshold it always satisfies (the body is
+#: 26-40 against a collar at 114-160), then walk LEFT to the visible crossing.
+#: The recovery between collar and body stops that walk, which is exactly what
+#: a single threshold cannot do -- shallow enough to reach the visible edge is
+#: also shallow enough to cross the collar.
+SHORT_ROI_ROWS = 80
+SHORT_BODY_FRAC = 0.75     # of (bright - dark) below bright: locates the body
+VISIBLE_EDGE_FRAC = 0.55   # of (bright - dark) below bright: the visible edge
+SHORT_MAX_WALK = 25        # px; bound on the walk out to the visible edge
 MIN_DARK_RUN = 12          # px: legacy floor, still applied to the row length
 #: Bright gaps up to ``GAP_CLOSE - 1`` px wide are closed before the runs are
 #: measured. The piston's left edge carries a narrow rim with a bright
@@ -147,6 +180,9 @@ ONSET_SPEED_FRAC = 0.25    # of the stroke's typical step
 ONSET_STEP_FLOOR = 0.35    # px; floor for the "still" test, above rest noise
 ONSET_QUIET = 5            # consecutive still frames that end the walk
 ONSET_STEP_SAMPLE = 50     # frames after the trigger defining the stroke step
+#: Plateau tolerance as a fraction of the travel the stroke itself would cover
+#: across HOLD_FRAMES. Frame-rate independent, unlike a fixed displacement.
+PLATEAU_STEP_FRAC = 0.25
 #: A step larger than this between consecutive frames is not motion -- at
 #: ~1000 fps and ~0.06 mm/px it would be over 600 mm/s, far beyond what the
 #: piston does. It means the detector changed its mind about which part of
@@ -161,6 +197,11 @@ HOLD_FRAMES = 15           # quiet frames that confirm the stroke has ended
 #: never fired. Real strokes on this rig run 90-200 frames and 150-260 px.
 MIN_STROKE_FRAMES = 20
 MIN_STROKE_PX = 15.0
+#: Below this share of frames yielding an edge, the burst has a contrast
+#: problem (usually over-exposure), not a stroke problem. Good rig runs detect
+#: 90%+; the frames that legitimately miss are the tail, after the piston has
+#: left the view.
+MIN_DETECT_FRAC = 0.6
 
 META_NAME = "piston_meta.json"          # written into the injection folder
 CAPTURE_META_NAME = "piston_capture.json"   # written into the burst folder
@@ -174,6 +215,9 @@ class BarrelProfile:
     row_hi: int             # inclusive
     dark: float
     bright: float
+    #: True for a short ROI (see SHORT_ROI_ROWS), which uses the visible-edge
+    #: rule instead of the blackness rule.
+    short: bool = False
 
     @property
     def thresh(self):
@@ -183,6 +227,27 @@ class BarrelProfile:
     def body_thresh(self):
         """Only the piston's solid body is this black (see MIN_BODY_RUN)."""
         return self.dark + BODY_DARK_FRAC * (self.bright - self.dark)
+
+    @property
+    def visible_thresh(self):
+        """Where the bright barrel first darkens (short ROIs only)."""
+        return self.bright - VISIBLE_EDGE_FRAC * (self.bright - self.dark)
+
+    @property
+    def short_body_thresh(self):
+        """Dark enough that only the piston body reaches it (short ROIs)."""
+        return self.bright - SHORT_BODY_FRAC * (self.bright - self.dark)
+
+    @property
+    def edge_thresh(self):
+        """The threshold that LOCATES the piston for this ROI.
+
+        Tall ROIs keep the blackness rule exactly as it was. Short ones locate
+        the body with their own darker threshold and then walk out to
+        ``visible_thresh`` -- see SHORT_ROI_ROWS for why one threshold cannot
+        do both jobs.
+        """
+        return self.short_body_thresh if self.short else self.body_thresh
 
     @property
     def centre_row(self):
@@ -318,7 +383,8 @@ def build_profile(frames, sample=PROFILE_SAMPLE):
             f"Barrel contrast too low ({bright - dark:.0f} grey levels): the "
             "piston cannot be separated from the background.")
     return BarrelProfile(row_lo=int(lo), row_hi=int(hi),
-                         dark=dark, bright=bright)
+                         dark=dark, bright=bright,
+                         short=bool(hi_img.shape[0] <= SHORT_ROI_ROWS))
 
 
 def _parabolic_offsets(grad, cols):
@@ -363,7 +429,7 @@ def edge_columns(gray, profile, min_dark_run=MIN_DARK_RUN):
     rows_idx = np.arange(band.shape[0])
 
     # First run of MIN_BODY_RUN consecutive genuinely-black px, per row.
-    body = smooth < profile.body_thresh
+    body = smooth < profile.edge_thresh
     if GAP_CLOSE > 1:
         body = binary_closing(body, structure=np.ones((1, GAP_CLOSE), dtype=bool))
 
@@ -386,7 +452,7 @@ def edge_columns(gray, profile, min_dark_run=MIN_DARK_RUN):
     valid = (lengths >= min_len) & (starts >= 1) & (starts < width - 2)
     if valid.any():
         probe = np.clip(starts[valid] - 3, 0, width - 1)
-        left_ok[valid] = smooth[rows_idx[valid], probe] > profile.body_thresh
+        left_ok[valid] = smooth[rows_idx[valid], probe] > profile.edge_thresh
     keep = valid & left_ok
     if not keep.any():
         return np.empty(0, dtype=int), np.empty(0, dtype=float)
@@ -397,12 +463,41 @@ def edge_columns(gray, profile, min_dark_run=MIN_DARK_RUN):
     kept_starts = starts[keep]
     offsets = np.arange(-GRAD_SEARCH, GRAD_SEARCH + 1)
     window = np.clip(kept_starts[:, None] + offsets[None, :], 1, width - 2)
+    if profile.short:
+        # Two-stage (short ROIs only): the run start is inside the body; walk
+        # back out to where the barrel first darkens. See SHORT_ROI_ROWS.
+        xs = _walk_to_visible(smooth[kept_rows], kept_starts,
+                              profile.visible_thresh)
+        return kept_rows + profile.row_lo, xs
+
     picks = window[np.arange(window.shape[0]),
                    np.argmin(grad[kept_rows[:, None], window], axis=1)]
     sub = _parabolic_offsets(grad[kept_rows], picks)
 
     xs = picks.astype(float) + sub
     return kept_rows + profile.row_lo, xs
+
+
+def _walk_to_visible(rows, starts, threshold, max_walk=SHORT_MAX_WALK):
+    """Walk left from each body start to where the row crosses *threshold*.
+
+    Sub-pixel by linear interpolation across the crossing. The walk stops at
+    the first pixel at or above the threshold, so the bright recovery between
+    a detached collar and the body halts it -- which is the whole point.
+    """
+    xs = np.empty(starts.size, dtype=float)
+    for i in range(starts.size):
+        line = rows[i]
+        col = int(starts[i])
+        limit = max(1, col - max_walk)
+        while col > limit and line[col - 1] < threshold:
+            col -= 1
+        above, below = float(line[col - 1]), float(line[col])
+        if above >= threshold > below and above != below:
+            xs[i] = (col - 1) + (above - threshold) / (above - below)
+        else:
+            xs[i] = float(col)
+    return xs
 
 
 def refine_band(frames, profile, sample=AGREE_SAMPLE, tol=AGREE_TOL):
@@ -438,7 +533,8 @@ def refine_band(frames, profile, sample=AGREE_SAMPLE, tol=AGREE_TOL):
         return profile
     return BarrelProfile(row_lo=profile.row_lo + keep[0],
                          row_hi=profile.row_lo + keep[1],
-                         dark=profile.dark, bright=profile.bright)
+                         dark=profile.dark, bright=profile.bright,
+                         short=profile.short)
 
 
 def measure_frame_edge(gray, profile, residual=RANSAC_RESIDUAL):
@@ -587,8 +683,13 @@ COARSE_DENSE_GUESS = 300   # progress-bar estimate for the dense pass
 
 
 def _scan_indices(files, indices, profile, workers, out, progress=None,
-                  done=0, total=None):
-    """Measure the given frame indices in parallel, writing into *out*."""
+                  done=0, total=None, scanned=None):
+    """Measure the given frame indices in parallel, writing into *out*.
+
+    *scanned*, when given, is marked True at every index actually looked at --
+    the coarse-to-fine scan leaves most frames NaN because it never reads them,
+    which is not the same as failing to find an edge in them.
+    """
     indices = list(indices)
     if not indices:
         return done
@@ -604,6 +705,8 @@ def _scan_indices(files, indices, profile, workers, out, progress=None,
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for i, value in pool.map(position, indices, chunksize=SCAN_CHUNK):
             out[i] = value
+            if scanned is not None:
+                scanned[i] = True
             done += 1
             if progress is not None and (done % step == 0 or done == total):
                 progress(min(done, total), total)
@@ -611,7 +714,7 @@ def _scan_indices(files, indices, profile, workers, out, progress=None,
 
 
 def scan_positions(files, profile, workers=SCAN_WORKERS, progress=None,
-                   stride=SCAN_STRIDE):
+                   stride=SCAN_STRIDE, scanned=None):
     """Edge position per frame -- the fast path, coarse to fine.
 
     Three things make this ~30x faster than :func:`track` on a full burst,
@@ -642,25 +745,27 @@ def scan_positions(files, profile, workers=SCAN_WORKERS, progress=None,
 
     # Short runs (and stride=1) are not worth bracketing.
     if stride <= 1 or n <= COARSE_MIN_FRAMES:
-        _scan_indices(files, range(n), profile, workers, out, progress)
+        _scan_indices(files, range(n), profile, workers, out, progress,
+                      scanned=scanned)
         return out
 
     coarse_idx = list(range(0, n, stride))
     head = list(range(0, min(n, BASELINE_FRAMES * 2)))
     total = len(coarse_idx) + len(head) + COARSE_DENSE_GUESS
     done = _scan_indices(files, coarse_idx, profile, workers, out,
-                         progress, 0, total)
+                         progress, 0, total, scanned=scanned)
 
     bracket = _motion_bracket(out[coarse_idx])
     if bracket is None:                       # nothing moved: coarse is enough
-        _scan_indices(files, head, profile, workers, out, progress, done, total)
+        _scan_indices(files, head, profile, workers, out, progress, done,
+                      total, scanned=scanned)
         return out
 
     lo = max(0, (bracket[0] - COARSE_MARGIN) * stride)
     hi = min(n - 1, (bracket[1] + COARSE_MARGIN) * stride)
     dense = sorted(set(head) | set(range(lo, hi + 1)) - set(coarse_idx))
     _scan_indices(files, dense, profile, workers, out, progress, done,
-                  max(total, done + len(dense)))
+                  max(total, done + len(dense)), scanned=scanned)
     return out
 
 
@@ -785,13 +890,18 @@ def detect_piston_bounds(x, baseline_frames=BASELINE_FRAMES,
         if still >= ONSET_QUIET:
             break
 
-    # Finding the plateau keeps the coarse trigger: once the piston has left
-    # the view the tracked position jumps around, and a noise-floor plateau
-    # would never be satisfied, stretching the window to the end of the burst.
+    # The plateau tolerance scales with the stroke's OWN motion, not with a
+    # fixed displacement: how far the piston travels across `hold` frames
+    # shrinks as the frame rate rises, so a fixed tolerance eventually exceeds
+    # it and the stroke itself reads as a plateau. At 1048 fps the piston
+    # covers ~25 px per hold window against a ~6 px trigger (fine); at 2511 fps
+    # it covers 6.4 px against the same 6.4 px trigger, and run
+    # 2026-08-13-09-31-20 ended 34 frames in, on a 128 px stroke.
+    plateau_tol = max(MOVE_ABS_PX, PLATEAU_STEP_FRAC * stroke_step * hold)
     end = series.size - 1
     for i in range(confirmed + 1, series.size - hold + 1):
         window = series[i : i + hold]
-        if float(window.max() - window.min()) <= trigger:
+        if float(window.max() - window.min()) <= plateau_tol:
             # The coarse window fits while the piston is still creeping the
             # last few px, so take the first frame that actually reached the
             # resting position -- otherwise the travel is under-reported.
@@ -844,12 +954,40 @@ def extract_piston_event(source_dir, dest_base, before=30, after=30,
     if fps is None and frame_times_us is None:
         fps, frame_times_us = load_capture_meta(source_dir)
 
+    scanned = np.zeros(len(files), dtype=bool)
     if fast:
         profile = build_profile(files)
-        positions = scan_positions(files, profile, progress=progress)
+        positions = scan_positions(files, profile, progress=progress,
+                                   scanned=scanned)
         tracked = {"x": positions, "profile": profile}
     else:
         tracked = track(files, progress=progress)
+        scanned[:] = True
+    # Diagnose a contrast failure BEFORE blaming the stroke. The piston is
+    # found as a run of genuinely black pixels, so an over-exposed burst --
+    # where the body washes out to mid-grey -- yields an edge in only some
+    # frames, and the stroke that survives is a fragment of the real one. Rig
+    # run 2026-08-13-09-02-14 at 320x64 detected 47% of frames (piston at 57
+    # grey against a 66 threshold) and reported a "4 frame" stroke, which sent
+    # the operator looking at the injector instead of the exposure.
+    # Rate over the frames actually READ: the coarse-to-fine scan never looks
+    # at most of them, and counting those as failures condemned a burst with
+    # 100% detection as a 59% one.
+    looked = max(1, int(np.count_nonzero(scanned)))
+    found = int(np.count_nonzero(np.isfinite(tracked["x"])))
+    if found < MIN_DETECT_FRAC * looked:
+        profile = tracked["profile"]
+        rule = ("the barrel does not darken enough at the piston's edge"
+                if profile.short else "the body is not dark enough to separate "
+                "from the barrel")
+        raise RuntimeError(
+            f"The piston edge was found in only {found} of {looked} frames "
+            f"read ({100.0 * found / looked:.0f}%): {rule} (levels "
+            f"{profile.dark:.0f} dark / {profile.bright:.0f} bright, needs "
+            f"pixels below {profile.edge_thresh:.0f}). Lower the exposure and "
+            "capture again -- the frame rate is set by the ROI height, not the "
+            "exposure, so a shorter exposure costs nothing.")
+
     bounds = detect_piston_bounds(tracked["x"])
     if bounds is None:
         raise RuntimeError(

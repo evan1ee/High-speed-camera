@@ -96,6 +96,23 @@ def test_roi_change_restarts_the_preview():
     assert 'self.roi_combo.bind("<<ComboboxSelected>>"' in layout_src
 
 
+def test_piston_burst_programs_its_own_roi_and_exposure():
+    """configure_camera otherwise runs only at grab-thread start, so a burst
+    inherits the preview's settings -- and the sensor keeps that frame period
+    even when the frames are the right shape (run 2026-08-13-09-18-35: correct
+    320x64 frames at the 320x120 period, 1798 fps instead of 2624)."""
+    src = inspect.getsource(camera_worker.CameraWorkerMixin._do_piston_capture)
+    assert "IMV_StopGrabbing" in src
+    assert "configure_camera(cam, sdk, params)" in src
+    assert src.index("configure_camera") < src.index("while ("), \
+        "the camera must be reconfigured before the grab loop"
+    # The params must carry everything configure_camera reads.
+    psrc = inspect.getsource(PistonMixin._capture_piston)
+    for field in ("pixel_format", "center_roi", "offset_x", "offset_y",
+                  "exposure_us", "frame_rate"):
+        assert f"{field}=" in psrc, field
+
+
 def test_piston_capture_rejects_a_wrong_frame_size():
     """Pinning the params is not enough -- the camera could still be streaming
     another ROI (e.g. the preview was started before the setting changed)."""

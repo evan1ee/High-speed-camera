@@ -18,7 +18,8 @@ from PIL import Image, ImageTk
 
 from hsc import capture_image
 from hsc import reference_lines
-from hsc.gui.config import DEFAULT_ROI, PAD_AFTER, PAD_BEFORE, ROI_FPS, ROOT
+from hsc.gui.config import (DEFAULT_ROI, PAD_AFTER, PAD_BEFORE, ROI_FPS,
+                            ROI_MAX_EXPOSURE_US, ROOT)
 
 
 class CaptureMixin:
@@ -162,9 +163,24 @@ class CaptureMixin:
         self._start_preview()
 
     def _update_roi_hint(self):
-        """Show the frame rate the selected ROI runs at (measured on the rig)."""
-        fps = ROI_FPS.get(self.aspect_var.get())
-        self.roi_fps_label.configure(text=f"~{fps} fps" if fps else "")
+        """Show the rate the selected ROI runs at, and flag an exposure that
+        would cap it. Too long an exposure costs speed AND contrast -- see
+        ROI_MAX_EXPOSURE_US."""
+        roi = self.aspect_var.get()
+        fps = ROI_FPS.get(roi)
+        if not fps:
+            self.roi_fps_label.configure(text="")
+            return
+        limit = ROI_MAX_EXPOSURE_US.get(roi)
+        try:
+            exposure = float(self.exposure_var.get())
+        except (TypeError, ValueError):
+            exposure = None
+        if limit and exposure and exposure > limit:
+            self.roi_fps_label.configure(
+                text=f"~{fps} fps - needs exposure <= {limit} us")
+        else:
+            self.roi_fps_label.configure(text=f"~{fps} fps")
 
     def _on_roi_change(self, _event=None):
         """Apply a new capture ROI.

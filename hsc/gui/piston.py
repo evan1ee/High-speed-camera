@@ -86,11 +86,22 @@ class PistonMixin:
         # asked for, which is the failure that WOULD corrupt the scale.
         aspect = self.aspect_var.get()
         width, height = capture_image.ASPECT_PRESETS[aspect]
+        _, exposure, _ = self._validate_inputs()
         self.piston_params = SimpleNamespace(
             duration=duration,
             aspect=aspect,
             width=width,
             height=height,
+            # Re-programmed onto the camera before the burst (see
+            # camera_worker._do_piston_capture): the preview may have left it
+            # on another ROI, and the sensor keeps the frame period of
+            # whatever was last programmed.
+            pixel_format="Mono8",
+            center_roi=True,
+            offset_x=None,
+            offset_y=None,
+            exposure_us=exposure,
+            frame_rate=None,
             ext=base.ext,
             prefix=base.prefix,
             burst_dir=base.burst_dir,

@@ -55,7 +55,11 @@ class LayoutMixin:
 
         self._label_entry(controls, "Capture time (s)", self.duration_var, 0, 0)
         self._label_entry(controls, "Camera index", self.camera_index_var, 0, 2)
-        self._label_entry(controls, "Exposure (us)", self.exposure_var, 1, 0)
+        exposure_entry = self._label_entry(
+            controls, "Exposure (us)", self.exposure_var, 1, 0)
+        # An exposure longer than the frame period caps the rate AND washes the
+        # piston out; keep the hint honest as it is typed.
+        exposure_entry.bind("<KeyRelease>", lambda _e: self._update_roi_hint())
         # Capture ROI: a shorter frame reads out faster (see CAPTURE_ROIS).
         # Image type is fixed at .bmp (ext_var default).
         ttk.Label(controls, text="Capture ROI").grid(

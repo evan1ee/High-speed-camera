@@ -331,6 +331,19 @@ class CameraWorkerMixin:
         ok = sdk["IMV_OK"]
         suffix = params.ext if params.ext.startswith(".") else f".{params.ext}"
         capture_image.save_type_for(Path(f"frame{suffix}"), sdk)
+
+        # Program THIS burst's ROI and exposure before grabbing. configure_camera
+        # otherwise runs only when the grab thread starts, so the burst inherits
+        # whatever the preview last set -- and the sensor keeps the frame period
+        # that went with it: run 2026-08-13-09-18-35 delivered correct 320x64
+        # frames at the 320x120 period (556 us, 1798 fps instead of 2624),
+        # because the preview had been started on the taller ROI. The size check
+        # in the grab loop cannot catch that; the frames are the right shape.
+        if cam.IMV_IsGrabbing():
+            cam.IMV_StopGrabbing()
+        capture_image.configure_camera(cam, sdk, params)
+        capture_image.check(cam.IMV_StartGrabbing(), ok, "Start grabbing")
+
         stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         run_name = capture_image.with_label(
             f"piston_{stamp}_{params.width}x{params.height}",

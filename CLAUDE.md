@@ -109,9 +109,12 @@ distance/speed-vs-time record of the stroke.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
-  The **Capture ROI** selector (`gui/config.CAPTURE_ROIS`, three options) picks the preset:
-  `320x240`/`320x120`/`320x64` → **1048/1798/2624 fps**, measured on the rig 2026-08-12 with
-  zero dropped frames. The rate is bound by **row readout, not exposure** — 100 µs, 200 µs and
+  The **Capture ROI** selector (`gui/config.CAPTURE_ROIS`) picks the preset:
+  `320x240`/`320x120` → **1048/1798 fps**, measured on the rig 2026-08-12 with zero dropped
+  frames. `320x64` (2624 fps) was measured and then **withdrawn**: it crops into the barrel
+  (48 usable rows vs 79 at both remaining sizes) and the piston there is grey with a collar
+  that detaches mid-stroke, so no single edge rule held across a stroke. To use that rate,
+  re-aim the camera so the barrel FILLS the short frame, then restore the preset. The rate is bound by **row readout, not exposure** — 100 µs, 200 µs and
   500 µs all give the identical rate at a given height, so keep the exposure up for contrast
   and shorten the ROI for speed. A short ROI is the only way to resolve the injection's opening
   transient (~2.9 ms: barely 3 frames at 1048 fps, ~7.6 at 2624 — below that the reported peak
