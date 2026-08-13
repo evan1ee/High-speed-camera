@@ -150,6 +150,9 @@ class LayoutMixin:
         # timing (Capture Piston writes per-frame timestamps).
         self._label_entry(workflow, "Piston FPS (if no meta)",
                           self.piston_fps_var, 2, 0)
+        # Injector geometry -> jet speed / pressure (measure_piston).
+        self._label_entry(workflow, "Barrel dia (mm)", self.barrel_mm_var, 2, 2)
+        self._label_entry(workflow, "Orifice dia (mm)", self.orifice_mm_var, 3, 0)
         self.extract_button = ttk.Button(
             workflow, text="Find Injection", command=self._find_injection)
         self.measure_button = ttk.Button(
@@ -164,7 +167,7 @@ class LayoutMixin:
         grid_buttons(workflow,
                      (self.extract_button, self.measure_button,
                       self.video_button, self.piston_find_button,
-                      self.piston_measure_button), 3, first_row=3)
+                      self.piston_measure_button), 3, first_row=4)
 
         # Operation: what the user touches every run.
         operation = section("Operation", 4)

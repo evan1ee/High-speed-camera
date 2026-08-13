@@ -32,6 +32,15 @@ from hsc.gui.config import (INJECTION_DIR, MEASURE_DIR, PAD_AFTER, PAD_BEFORE,
                             ROOT)
 
 
+def _positive_or(text, fallback):
+    """A positive number from an entry field, else *fallback*."""
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
+
+
 class PistonMixin:
     """Piston capture / find / measure actions and their queue handlers."""
 
@@ -59,6 +68,13 @@ class PistonMixin:
         # Find Injection Piston V2: locate the stroke with the parallel scan
         # instead of a full per-frame fit. Same window, ~20x faster.
         self.piston_v2_var = tk.BooleanVar(value=False)
+        # Injector geometry -> jet speed and pressure by volume conservation
+        # (see measure_piston.jet_from_piston). Properties of the device under
+        # test, so they belong on screen rather than in a constant.
+        self.barrel_mm_var = tk.StringVar(
+            value=str(measure_piston.BARREL_DIAMETER_MM))
+        self.orifice_mm_var = tk.StringVar(
+            value=str(measure_piston.ORIFICE_DIAMETER_MM))
 
     # ------------------------------------------------------------------
     # Capture Piston (toggles to "Stop Piston" while the burst runs)
@@ -244,11 +260,18 @@ class PistonMixin:
 
         fps = self._piston_fps()
         note = f", {fps:.0f} fps (entered)" if fps else ""
-        self._append_log(f"Measuring piston travel in {source}{note} ...\n")
+        barrel = _positive_or(self.barrel_mm_var.get(),
+                              measure_piston.BARREL_DIAMETER_MM)
+        orifice = _positive_or(self.orifice_mm_var.get(),
+                               measure_piston.ORIFICE_DIAMETER_MM)
+        self._append_log(
+            f"Measuring piston travel in {source}{note} "
+            f"(barrel {barrel} mm, orifice {orifice} mm) ...\n")
         self.status_var.set("Measuring piston travel...")
         self.piston_measure_button.configure(state=tk.DISABLED)
         self.piston_measure_thread = threading.Thread(
-            target=self._piston_measure_worker, args=(source, fps), daemon=True)
+            target=self._piston_measure_worker,
+            args=(source, fps, barrel, orifice), daemon=True)
         self.piston_measure_thread.start()
 
     def _piston_fps(self):
@@ -259,13 +282,14 @@ class PistonMixin:
             return None
         return fps if fps > 0 else None
 
-    def _piston_measure_worker(self, source, fps):
+    def _piston_measure_worker(self, source, fps, barrel_mm, orifice_mm):
         def progress(done, total):
             self.output_queue.put(("STATUS", f"Measuring piston... {done}/{total}"))
 
         try:
             result = measure_piston.measure_folder(
                 source, dest_base=MEASURE_DIR, fps=fps, progress=progress,
+                barrel_mm=barrel_mm, orifice_mm=orifice_mm,
                 log=lambda message: self.output_queue.put(
                     f"[Piston note] {message}\n"))
             self.output_queue.put(("PMEASURE_DONE", result))
@@ -292,6 +316,9 @@ class PistonMixin:
             f"{travel}"
             f"  Duration:    {result['duration_ms']:.1f} ms "
             f"({result['move_start_frame']} .. {result['move_end_frame']})\n"
+            f"  Jet (peak):  {result['peak_jet_speed_m_s']:.1f} m/s, "
+            f"{result['peak_jet_pressure_MPa']:.2f} MPa "
+            f"(area ratio {result['area_ratio']:.0f}x)\n"
             f"  Time base:   {result['timebase']} at {result['fps']:.1f} fps\n"
             f"  Scale:       {scale}\n"
             f"  Saved to:    {result['dest_dir']}\n"

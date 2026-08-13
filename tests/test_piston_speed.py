@@ -199,6 +199,47 @@ def test_speed_plot_marks_the_reported_peak(tmp_path):
     assert columns.max() - columns.min() > plot.shape[1] // 2
 
 
+def test_jet_speed_and_pressure_from_piston_speed():
+    """Volume conservation through the orifice, against the worked example:
+    a 6.12 mm barrel, a 0.155 mm orifice and a 131 mm/s piston.
+
+        v_jet = v_piston * (D_barrel / D_orifice)^2
+        p     = rho/2 * v_jet^2
+    """
+    jet, mpa, ratio = mp.jet_from_piston(131.0, barrel_mm=6.12,
+                                         orifice_mm=0.155, density=1000.0)
+    assert ratio == pytest.approx((6.12 / 0.155) ** 2, rel=1e-9)
+    assert float(jet) == pytest.approx(204.23, abs=0.05)
+    assert float(mpa) == pytest.approx(0.5 * 1000 * 204.23 ** 2 / 1e6, abs=0.02)
+    # Scales with the square of the diameter ratio, linearly with speed.
+    doubled, _p, _r = mp.jet_from_piston(262.0, 6.12, 0.155, 1000.0)
+    assert float(doubled) == pytest.approx(2 * float(jet), rel=1e-9)
+
+
+def test_jet_columns_and_curves_are_written(tmp_path):
+    src = make_folder(tmp_path)
+    result = mp.measure_folder(src, dest_base=tmp_path / "measure",
+                               mm_per_px=MM_PER_PX, barrel_mm=6.12,
+                               orifice_mm=0.155)
+    dest = tmp_path / "measure" / src.name
+    assert mp.output_path(dest, mp.JET_SPEED_PLOT_SUFFIX).exists()
+    assert mp.output_path(dest, mp.JET_PRESSURE_PLOT_SUFFIX).exists()
+
+    rows = _rows(mp.output_path(dest, mp.CSV_SUFFIX))
+    moving = [r for r in rows if r["frame"].startswith("frame_")
+              and r["jet_speed_m_s"] not in ("", None)]
+    assert moving, "no jet speed written"
+    # The jet column is the piston column scaled by the area ratio.
+    ratio = (6.12 / 0.155) ** 2
+    row = moving[len(moving) // 2]
+    assert float(row["jet_speed_m_s"]) == pytest.approx(
+        float(row["speed_mm_s"]) * ratio / 1000.0, rel=1e-3)
+    assert float(row["jet_pressure_MPa"]) == pytest.approx(
+        0.5 * 1000 * float(row["jet_speed_m_s"]) ** 2 / 1e6, rel=1e-3)
+    assert result["peak_jet_speed_m_s"] == pytest.approx(
+        result["peak_speed_mm_s"] * ratio / 1000.0, rel=1e-3)
+
+
 def test_plot_helper_renders_an_image():
     from hsc import piston_plot
 

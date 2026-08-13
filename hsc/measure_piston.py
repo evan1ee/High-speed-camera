@@ -46,6 +46,25 @@ DEST_FOLDER_NAME = "measure"
 CSV_SUFFIX = "_speed.csv"
 DISTANCE_PLOT_SUFFIX = "_distance_time.png"
 SPEED_PLOT_SUFFIX = "_speed_time.png"
+JET_SPEED_PLOT_SUFFIX = "_jet_speed_time.png"
+JET_PRESSURE_PLOT_SUFFIX = "_jet_pressure_time.png"
+
+# ---- Jet speed / pressure from the piston -------------------------------
+#: The dose is incompressible and has nowhere else to go, so the volume the
+#: piston sweeps per unit time equals the volume leaving the orifice:
+#:
+#:     pi*R_barrel^2 * v_piston  =  pi*R_orifice^2 * v_jet
+#:     v_jet = v_piston * (D_barrel / D_orifice)^2
+#:
+#: (pi/4 cancels, so DIAMETERS may be used directly.) The jet is then a free
+#: stream, and its stagnation pressure -- what the jet delivers on impact -- is
+#: the dynamic pressure p = rho/2 * v_jet^2.
+#:
+#: These are properties of the injector under test, not of the rig, so they are
+#: entry fields; the defaults are the device measured on 2026-08-13.
+BARREL_DIAMETER_MM = 6.12
+ORIFICE_DIAMETER_MM = 0.155
+FLUID_DENSITY = 1000.0      # kg/m^3, water
 
 
 def output_path(dest_dir, suffix):
@@ -104,6 +123,26 @@ def resolve_timebase(meta, n, fps=None):
         "No frame timing for this folder: it has no piston_meta.json and no "
         "frame rate was given. Measure a folder made by Capture Piston, or "
         "enter the capture FPS.")
+
+
+def jet_from_piston(speed_mm_s, barrel_mm=BARREL_DIAMETER_MM,
+                    orifice_mm=ORIFICE_DIAMETER_MM, density=FLUID_DENSITY):
+    """``(jet_speed_m_s, jet_pressure_MPa, area_ratio)`` from the piston speed.
+
+    See BARREL_DIAMETER_MM for the derivation. *speed_mm_s* may be an array.
+    Returns all-NaN when the geometry is unusable, rather than a plausible
+    number from a nonsense ratio.
+    """
+    speed = np.asarray(speed_mm_s, dtype=float)
+    barrel, orifice = _positive(barrel_mm), _positive(orifice_mm)
+    rho = _positive(density)
+    if not barrel or not orifice or not rho:
+        nan = np.full(speed.shape, np.nan)
+        return nan, nan, float("nan")
+    ratio = (barrel / orifice) ** 2
+    jet_m_s = speed * ratio / 1000.0            # mm/s -> m/s
+    pressure_mpa = 0.5 * rho * jet_m_s ** 2 / 1e6
+    return jet_m_s, pressure_mpa, ratio
 
 
 def _positive(value):
@@ -205,7 +244,8 @@ def _load_meta(source_dir):
 
 # ---- Main entry point ----------------------------------------------------
 def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
-                   progress=None, log=None):
+                   progress=None, log=None, barrel_mm=BARREL_DIAMETER_MM,
+                   orifice_mm=ORIFICE_DIAMETER_MM, density=FLUID_DENSITY):
     """Measure every frame of *source_dir* and write images, CSV and curves."""
     source_dir = Path(source_dir)
     files = injection_extract.list_frames(source_dir)
@@ -317,6 +357,18 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
     peak_speed = (float(np.max(speed_mm_s[finite]))
                   if scale_mm > 0 and finite.any() else float("nan"))
 
+    # Jet speed and stagnation pressure follow from the piston speed by volume
+    # conservation -- see BARREL_DIAMETER_MM.
+    jet_m_s, jet_mpa, area_ratio = jet_from_piston(
+        speed_mm_s, barrel_mm, orifice_mm, density)
+    jet_finite = np.isfinite(jet_m_s)
+    peak_jet = float(np.max(jet_m_s[jet_finite])) if jet_finite.any() else float("nan")
+    peak_pressure = (float(np.max(jet_mpa[jet_finite]))
+                     if jet_finite.any() else float("nan"))
+    if np.isfinite(area_ratio):
+        warn(f"Jet: barrel {barrel_mm} mm / orifice {orifice_mm} mm -> area "
+             f"ratio {area_ratio:.1f}x, density {density:.0f} kg/m3.")
+
     if dest_base is None:
         parents = source_dir.parents
         base = parents[1] if len(parents) > 1 else source_dir.parent
@@ -343,7 +395,7 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
 
     _write_csv(output_path(dest_dir, CSV_SUFFIX), files, times_rel,
                tracked["x"], distance_px,
-               distance_mm, speed_mm_s, fits, unstable,
+               distance_mm, speed_mm_s, jet_m_s, jet_mpa, fits, unstable,
                summary={
                    "unstable_frames": int(unstable.sum()),
                    "stroke_px": stroke_px,
@@ -351,6 +403,12 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
                    "duration_ms": duration_ms,
                    "mean_speed_mm_s": mean_speed,
                    "peak_speed_mm_s": peak_speed,
+                   "peak_jet_speed_m_s": peak_jet,
+                   "peak_jet_pressure_MPa": peak_pressure,
+                   "barrel_mm": barrel_mm,
+                   "orifice_mm": orifice_mm,
+                   "area_ratio": area_ratio,
+                   "fluid_density": density,
                    "mm_per_px": scale_mm,
                    "scale_source": scale_source,
                    "fps": fps_used,
@@ -376,6 +434,17 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
         title=f"Piston speed - {source_dir.name}", x_label="time (ms)",
         y_label=f"speed ({unit})", mark_x=0.0, mark_y=peak_curve)
 
+    if jet_finite.any():
+        piston_plot.save_line_plot(
+            output_path(dest_dir, JET_SPEED_PLOT_SUFFIX), time_ms, jet_m_s,
+            title=f"Jet speed - {source_dir.name}", x_label="time (ms)",
+            y_label="jet speed (m/s)", mark_x=0.0, mark_y=peak_jet)
+        piston_plot.save_line_plot(
+            output_path(dest_dir, JET_PRESSURE_PLOT_SUFFIX), time_ms, jet_mpa,
+            title=f"Jet pressure - {source_dir.name}", x_label="time (ms)",
+            y_label="stagnation pressure (MPa)", mark_x=0.0,
+            mark_y=peak_pressure)
+
     return {
         "source_dir": str(source_dir),
         "dest_dir": str(dest_dir),
@@ -390,6 +459,12 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
         "duration_ms": duration_ms,
         "mean_speed_mm_s": mean_speed,
         "peak_speed_mm_s": peak_speed,
+        "peak_jet_speed_m_s": peak_jet,
+        "peak_jet_pressure_MPa": peak_pressure,
+        "barrel_mm": float(barrel_mm) if barrel_mm else float("nan"),
+        "orifice_mm": float(orifice_mm) if orifice_mm else float("nan"),
+        "area_ratio": area_ratio,
+        "fluid_density": float(density) if density else float("nan"),
         "mm_per_px": scale_mm,
         "scale_source": scale_source,
         "fps": fps_used,
@@ -429,13 +504,14 @@ def _reference_index(tracked, meta, fits):
 
 
 def _write_csv(path, files, times_rel, xs, distance_px, distance_mm,
-               speed_mm_s, fits, unstable, summary):
+               speed_mm_s, jet_m_s, jet_mpa, fits, unstable, summary):
     def num(value, fmt):
         return format(value, fmt) if np.isfinite(value) else ""
 
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("frame,time_ms,x_px,distance_px,distance_mm,speed_mm_s,"
-                 "speed_m_s,k,n_points,rms_px,coverage,at_border,stable\n")
+                 "speed_m_s,jet_speed_m_s,jet_pressure_MPa,"
+                 "k,n_points,rms_px,coverage,at_border,stable\n")
         for i, file in enumerate(files):
             fit = fits[i]
             fh.write(
@@ -443,6 +519,7 @@ def _write_csv(path, files, times_rel, xs, distance_px, distance_mm,
                 f"{num(xs[i], '.3f')},{num(distance_px[i], '.3f')},"
                 f"{num(distance_mm[i], '.4f')},{num(speed_mm_s[i], '.2f')},"
                 f"{num(speed_mm_s[i] / 1000.0, '.4f')},"
+                f"{num(jet_m_s[i], '.2f')},{num(jet_mpa[i], '.3f')},"
                 f"{num(fit['k'], '.5f') if fit else ''},"
                 f"{fit['n_points'] if fit else ''},"
                 f"{num(fit['rms'], '.3f') if fit else ''},"
@@ -464,6 +541,12 @@ def main():
                         help="capture frame rate, if the folder has no meta")
     parser.add_argument("--mm-per-px", type=float, default=None,
                         help="override the stored scale calibration")
+    parser.add_argument("--barrel-mm", type=float, default=BARREL_DIAMETER_MM,
+                        help="barrel bore diameter (jet speed/pressure)")
+    parser.add_argument("--orifice-mm", type=float, default=ORIFICE_DIAMETER_MM,
+                        help="nozzle orifice diameter (jet speed/pressure)")
+    parser.add_argument("--density", type=float, default=FLUID_DENSITY,
+                        help="fluid density in kg/m^3")
     args = parser.parse_args()
 
     def progress(done, total):
@@ -471,10 +554,14 @@ def main():
 
     result = measure_folder(args.source, dest_base=args.dest, fps=args.fps,
                             mm_per_px=args.mm_per_px, progress=progress,
+                            barrel_mm=args.barrel_mm,
+                            orifice_mm=args.orifice_mm, density=args.density,
                             log=lambda m: print(f"\n[warn] {m}"))
     print()
     for key in ("stroke_mm", "duration_ms", "mean_speed_mm_s",
-                "peak_speed_mm_s", "fps", "timebase", "dest_dir"):
+                "peak_speed_mm_s", "peak_jet_speed_m_s",
+                "peak_jet_pressure_MPa", "area_ratio", "fps", "timebase",
+                "dest_dir"):
         print(f"{key}: {result[key]}")
 
 
