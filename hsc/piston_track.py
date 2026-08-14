@@ -192,11 +192,19 @@ PLATEAU_STEP_FRAC = 0.25
 MAX_STEP_PX = 10.0
 MEDIAN_WINDOW = 5          # frames; kills single-frame position spikes
 HOLD_FRAMES = 15           # quiet frames that confirm the stroke has ended
-#: Below either of these the "stroke" is not an injection worth measuring --
-#: typically a burst that started after the shot, or one where the injector
-#: never fired. Real strokes on this rig run 90-200 frames and 150-260 px.
-MIN_STROKE_FRAMES = 20
-MIN_STROKE_PX = 15.0
+#: What separates "no injection in this burst" from a real one, for
+#: locate_stroke. Both tests are DOSE-INDEPENDENT: the stroke is proportional
+#: to the dose, so any floor in frames or pixels is really a floor on the dose.
+#: The first version used 20 frames / 15 px, read off the 40 U runs that
+#: existed then, and rejected a good 4 U injection -- 19 frames, 20.3 px, which
+#: converts back to 0.044 mL = 4.4 U, exactly its label.
+MIN_STROKE_MS = 2.0        # rejects one- and two-frame artefacts
+MIN_TRAVEL_SIGMA = 6.0     # travel must exceed the resting noise by this much
+MIN_TRAVEL_PX = 3.0        # ... and this, if the baseline is unusually quiet
+#: locate_stroke only (see its docstring for why it cannot share these with
+#: detect_piston_bounds).
+TRIGGER_WINDOW = 30        # frames in the local baseline
+SETTLE_SAMPLE = 300        # frames after the plateau defining the parked level
 #: Below this share of frames yielding an edge, the burst has a contrast
 #: problem (usually over-exposure), not a stroke problem. Good rig runs detect
 #: 90%+; the frames that legitimately miss are the tail, after the piston has
@@ -932,6 +940,118 @@ def load_capture_meta(source_dir):
     return fps, (list(times) if times else None)
 
 
+def locate_stroke(x, hold=HOLD_FRAMES):
+    """``(start, end)`` of the injection inside a whole BURST, or ``None``.
+
+    Separate from :func:`detect_piston_bounds` because the two see different
+    signals and only one of them can be solved this way. A burst is ~98% rest
+    with the shot somewhere inside it; the copied window measure_piston works
+    on is ~72% stroke. The rules below estimate "how still is still" from the
+    series itself, which is sound for a burst and nonsense for a window that is
+    mostly motion -- using one function for both silently halved a 27 U stroke
+    (rig runs 2026-08-14-10-*, 9.25 mm read as 8.19 mm).
+
+    What this does that a burst needs and a window does not:
+
+    * The trigger measures displacement from a LOCAL baseline -- the mean of
+      the preceding TRIGGER_WINDOW frames. Against the run's opening frames it
+      cannot work at any threshold, because the stroke is proportional to the
+      dose while the barrel drift it must clear is not: a 4 U shot moves 27 px
+      after the barrel has wandered 0.9 px, and 5%-of-travel puts the trigger
+      at 1.4 px, firing on the wander 50 frames early.
+    * It anchors on the PEAK of that signal rather than the first crossing.
+      The injection is the largest coherent movement in a burst, so the peak is
+      inside it by construction; the first crossing is whatever wobbled first,
+      and a touch of the rig 2600 frames early moved run 2026-08-07-15-55-38
+      from (3516, 3736) to (867, 876).
+    """
+    series = _filled(x)
+    if series is None or series.size < BASELINE_FRAMES + MOVE_CONFIRM + 2:
+        return None
+    series = _median_filter(series)
+
+    window = int(min(TRIGGER_WINDOW, max(4, series.size // 8)))
+    local = series - _trailing_mean(series, window)
+    # The quiet level of that signal. A burst is overwhelmingly at rest, so a
+    # low percentile is the resting level wherever the shot happens to fall.
+    quiet_local = float(np.percentile(np.abs(local), 25)) * 1.4826
+    trigger = max(MOVE_ABS_PX, MOVE_SIGMA_K * quiet_local)
+
+    peak = int(np.argmax(np.abs(local)))
+    if abs(float(local[peak])) < trigger:
+        return None                       # nothing in this burst moved at all
+
+    steps = np.abs(np.diff(series, prepend=series[0]))
+    lo = max(0, peak - ONSET_STEP_SAMPLE // 2)
+    stroke_step = float(np.median(steps[lo : peak + ONSET_STEP_SAMPLE // 2 + 1]))
+
+    # Walk back to the onset by local step -- see ONSET_SPEED_FRAC.
+    still_tol = max(ONSET_STEP_FLOOR, ONSET_SPEED_FRAC * stroke_step)
+    start = peak
+    limit = max(0, peak - MAX_ONSET_WALK)
+    still = 0
+    for i in range(peak, limit, -1):
+        if steps[i] > still_tol:
+            start, still = i, 0
+            continue
+        still += 1
+        if still >= ONSET_QUIET:
+            break
+
+    # ... and forward to the first plateau, then on to the frame that actually
+    # reached the parked level. The plateau window fits while the piston is
+    # still creeping, and its own median is mid-tail; the level has to come
+    # from after it, where a burst has thousands of frames of the piston
+    # sitting still.
+    plateau_tol = max(MOVE_ABS_PX, PLATEAU_STEP_FRAC * stroke_step * hold)
+    settle_tol = max(MOVE_ABS_PX, MOVE_SIGMA_K * quiet_local)
+    end = series.size - 1
+    for i in range(peak + 1, series.size - hold + 1):
+        block = series[i : i + hold]
+        if float(block.max() - block.min()) <= plateau_tol:
+            parked = series[i + hold : i + hold + SETTLE_SAMPLE]
+            level = float(np.median(parked)) if parked.size else float(
+                np.median(block))
+            end = i
+            for j in range(peak, series.size):
+                if abs(series[j] - level) <= settle_tol:
+                    end = j
+                    break
+            break
+    return int(start), int(max(end, start))
+
+
+def stroke_significance(xs, start, end):
+    """``(travel_px, noise_px)`` for a detected stroke.
+
+    *noise* is what the SAME measurement produces while the piston stands
+    still, from the frames ahead of the onset, so the comparison scales with
+    the run's own detection quality. A real injection clears it by more than an
+    order of magnitude -- 60x for a 4 U shot -- while a burst that caught none
+    sits at it.
+    """
+    series = _filled(xs)
+    if series is None or end <= start:
+        return 0.0, MIN_TRAVEL_PX
+    block = series[start : end + 1]
+    travel = float(np.max(block) - np.min(block))
+    head = series[:start]
+    sigma = 0.0
+    if head.size >= BASELINE_FRAMES:
+        sigma = float(np.median(np.abs(head - np.median(head)))) * 1.4826
+    return travel, max(MIN_TRAVEL_PX, MIN_TRAVEL_SIGMA * sigma)
+
+
+def _trailing_mean(series, window):
+    """Mean of the *window* frames preceding each index (the first *window*
+    frames keep their own value, so they read as no displacement)."""
+    totals = np.concatenate([[0.0], np.cumsum(series)])
+    out = np.array(series, dtype=float, copy=True)
+    if series.size > window:
+        out[window:] = (totals[window:-1] - totals[:-window - 1]) / window
+    return out
+
+
 def extract_piston_event(source_dir, dest_base, before=30, after=30,
                          fps=None, frame_times_us=None, progress=None,
                          copy=True, fast=False):
@@ -988,25 +1108,29 @@ def extract_piston_event(source_dir, dest_base, before=30, after=30,
             "capture again -- the frame rate is set by the ROI height, not the "
             "exposure, so a shorter exposure costs nothing.")
 
-    bounds = detect_piston_bounds(tracked["x"])
+    bounds = locate_stroke(tracked["x"])
     if bounds is None:
         raise RuntimeError(
             "No piston movement detected. The edge never leaves its resting "
             "position -- check that the injector fired during the capture.")
 
     start, end = bounds
-    # A burst that caught only the tail of an injection (or none at all) still
-    # yields a "stroke" of a handful of frames, and every number measured from
-    # it is meaningless. Say so instead of writing a plausible-looking folder.
-    travel = float(np.nanmax(tracked["x"][start : end + 1])
-                   - np.nanmin(tracked["x"][start : end + 1])) \
-        if end > start else 0.0
-    if end - start + 1 < MIN_STROKE_FRAMES or travel < MIN_STROKE_PX:
+    # A burst where the injector never fired, or that started after the shot,
+    # still yields a "stroke" of a few frames; every number measured from it
+    # would be meaningless. Both tests are dose-independent -- see
+    # MIN_STROKE_MS -- so a small dose is measured, not rejected.
+    travel, noise = stroke_significance(tracked["x"], start, end)
+    duration_ms = (end - start + 1) / fps * 1000.0 if fps else None
+    if travel < noise or (duration_ms is not None
+                          and duration_ms < MIN_STROKE_MS):
+        span = (f"{duration_ms:.1f} ms" if duration_ms is not None
+                else f"{end - start + 1} frame(s)")
         raise RuntimeError(
-            f"The stroke in this burst is only {end - start + 1} frame(s) and "
-            f"{travel:.1f} px of travel -- too little to measure. The capture "
-            "probably started after the injection, or the injector did not "
-            "fire. Capture again, firing a second or so into the window.")
+            f"No measurable injection in this burst: the edge moved "
+            f"{travel:.1f} px over {span}, against a resting noise level of "
+            f"{noise:.1f} px. The injector probably did not fire, or the "
+            "capture started after it did. Capture again, firing a second or "
+            "so into the window.")
     copy_start = max(0, start - int(before))
     copy_end = min(len(files) - 1, end + int(after))
     selected = files[copy_start : copy_end + 1]

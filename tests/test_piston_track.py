@@ -229,6 +229,67 @@ def test_coarse_to_fine_scan_matches_a_full_scan():
     assert abs(b_fast[1] - b_full[1]) <= 5
 
 
+def test_locate_stroke_finds_a_small_dose_over_a_drifting_baseline():
+    """A small dose is not a degenerate run. The stroke is proportional to the
+    dose, so anything the trigger compares against a distant baseline scales
+    with the dose while the barrel drift it must clear does not: on rig run
+    2026-08-14-10-27-10 a 4 U shot moved 27 px after the barrel had wandered
+    0.9 px, and a 5%-of-travel trigger fired on the wander 50 frames early."""
+    rng = np.random.default_rng(5)
+    n_rest, n_move = 3000, 30
+    rest = 249.0 + np.linspace(0.0, 0.9, n_rest) + rng.normal(0, 0.01, n_rest)
+    stroke = rest[-1] + np.cumsum(np.full(n_move, 27.0 / n_move))
+    x = np.concatenate([rest, stroke, np.full(400, stroke[-1])])
+
+    bounds = pt.locate_stroke(x)
+    assert bounds is not None, "a 4 U stroke must not read as no injection"
+    start, end = bounds
+    assert abs(start - n_rest) <= 5, f"onset {start} fired on the drift"
+    travel, noise = pt.stroke_significance(x, start, end)
+    assert travel > noise
+    assert travel == pytest.approx(27.0, rel=0.15)
+
+
+def test_locate_stroke_ignores_an_early_wobble():
+    """It anchors on the PEAK, not the first threshold crossing: a touch of the
+    rig 2600 frames early moved run 2026-08-07-15-55-38 to (867, 876)."""
+    rng = np.random.default_rng(6)
+    x = np.concatenate([
+        60.0 + rng.normal(0, 0.02, 900),
+        62.0 + rng.normal(0, 0.02, 20),        # a brief 2 px wobble
+        60.0 + rng.normal(0, 0.02, 900),
+        60.0 + np.cumsum(np.full(150, 1.5)),   # the injection, 225 px
+        np.full(500, 60.0 + 225.0)])
+    start, end = pt.locate_stroke(x)
+    assert start > 1500, f"onset {start} latched onto the early wobble"
+    assert abs(start - 1820) <= 20
+
+
+def test_measure_path_is_not_the_burst_path():
+    """locate_stroke estimates 'how still is still' from the series itself,
+    which is sound for a burst (~98% rest) and nonsense for the copied window
+    measure_piston works on (~72% stroke). Sharing one function between them
+    silently halved a 27 U stroke: 9.25 mm read as 8.19 mm on rig runs
+    2026-08-14-10-*. The measure path must keep its own detector."""
+    import inspect
+
+    from hsc import measure_piston
+
+    assert "locate_stroke" in inspect.getsource(pt.extract_piston_event)
+    assert "locate_stroke" not in inspect.getsource(measure_piston)
+    assert "detect_piston_bounds" in inspect.getsource(measure_piston)
+
+    # A window that is mostly stroke: what measure_piston actually sees.
+    window = np.concatenate([np.full(30, 100.0),
+                             100.0 + np.cumsum(np.full(155, 1.0)),
+                             np.full(30, 255.0)])
+    bounds = pt.detect_piston_bounds(window)
+    assert bounds is not None, "the measure detector must handle its own input"
+    start, end = bounds
+    assert start <= 35, f"onset {start} must stay in the leading padding"
+    assert end >= 180, f"end {end} truncates the stroke"
+
+
 def test_no_motion_detects_no_injection():
     result = pt.track(make_run([40.0] * 60))
     assert pt.detect_piston_bounds(result["x"]) is None
