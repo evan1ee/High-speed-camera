@@ -7,6 +7,14 @@ EXCLUDED FROM COVERAGE -- it cannot run without hardware. In exchange it holds
 NO logic: no branching, no computation, only delegation. A test parses this
 file and fails if that stops being true, so anything that could be wrong is
 somewhere it can be tested.
+
+Error contract: SDK failures surface as plain ``RuntimeError`` (raised by
+``capture_image.check``), NOT ``hsc.hardware.device.CameraError`` --
+``FakeCamera`` raises ``CameraError`` directly, so the two ``CameraDevice``
+implementations disagree here. This adapter cannot reconcile that itself (no
+``try`` is permitted, by the same no-logic rule); the rig layer must catch
+``RuntimeError`` at the boundary and re-raise as ``CameraError`` so every
+caller above has one exception type to catch.
 """
 
 from ctypes import byref, c_void_p, string_at
@@ -15,7 +23,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from hsc import capture_image
-from hsc.hardware.device import CameraError, Frame
+from hsc.hardware.device import Frame, sdk_device_index
 
 
 class ImvCamera:
@@ -26,14 +34,11 @@ class ImvCamera:
         self._cam = None
 
     def open(self, index):
-        # index is the SDK's own 0-based device index -- unlike the 1-based
-        # convention capture_image.py's CLI uses, translating that stays a
-        # decision for the caller, not delegation the adapter may compute.
         self._cam = self._sdk["MvCamera"]()
         capture_image.check(
             self._cam.IMV_CreateHandle(
                 self._sdk["IMV_ECreateHandleMode"].modeByIndex,
-                byref(c_void_p(index))),
+                byref(c_void_p(sdk_device_index(index)))),
             self._sdk["IMV_OK"], "Create camera handle")
         capture_image.check(self._cam.IMV_Open(), self._sdk["IMV_OK"],
                             "Open camera")

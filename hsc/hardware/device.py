@@ -29,6 +29,20 @@ class CameraConfigError(CameraError):
 ROI_INCREMENT = 4
 
 
+def sdk_device_index(index: int) -> int:
+    """Translate the rig's 1-based camera index to the SDK's 0-based one.
+
+    The whole application is 1-based -- see capture_image.DEFAULT_CAPTURE_CONFIG
+    and its ``1 <= index <= nDevNum`` validation. The SDK is 0-based. Keeping the
+    translation here, rather than in the coverage-excluded adapter, is what makes
+    it testable.
+    """
+    if index < 1:
+        raise CameraConfigError(
+            f"camera index is 1-based and must be >= 1, got {index}")
+    return index - 1
+
+
 @dataclass(frozen=True, eq=False)
 class Frame:
     """One grabbed frame.
@@ -81,7 +95,11 @@ class CaptureConfig:
 class CameraDevice(Protocol):
     """The camera operations the rig needs. See fake.py for the reference."""
 
-    def open(self, index: int) -> None: ...
+    def open(self, index: int) -> None:
+        """Open the ``index``-th camera. ``index`` is 1-based, matching the
+        rig's own convention (``capture_image.DEFAULT_CAPTURE_CONFIG``) --
+        NOT the SDK's 0-based one. See ``sdk_device_index``."""
+        ...
     def configure(self, cfg: CaptureConfig) -> None: ...
     def start(self) -> None: ...
     def grab(self, timeout_ms: int) -> Frame | None: ...

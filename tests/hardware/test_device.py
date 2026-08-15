@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from hsc.hardware.device import CameraConfigError, CaptureConfig, Frame
+from hsc.hardware.device import (CameraConfigError, CaptureConfig, Frame,
+                                  sdk_device_index)
 
 
 def test_frame_exposes_size_and_timing():
@@ -51,6 +52,29 @@ def test_frame_equality_is_by_identity_not_pixel_value():
     result = frame1 == frame2
     assert isinstance(result, (bool, np.bool_))
     assert not result
+
+
+def test_sdk_device_index_translates_the_rigs_first_camera():
+    """The rig is 1-based everywhere (capture_image.DEFAULT_CAPTURE_CONFIG,
+    capture_once/capture_burst's ``1 <= index <= nDevNum`` validation); the
+    SDK's IMV_CreateHandle wants a 0-based index."""
+    assert sdk_device_index(1) == 0
+
+
+def test_sdk_device_index_translates_a_later_camera():
+    assert sdk_device_index(3) == 2
+
+
+def test_sdk_device_index_rejects_the_sdks_own_zero_based_index():
+    """Passing 0 (or lower) is the exact mistake this function exists to
+    catch -- it would silently open the wrong physical device."""
+    with pytest.raises(CameraConfigError, match="1-based"):
+        sdk_device_index(0)
+
+
+def test_sdk_device_index_rejects_a_negative_index():
+    with pytest.raises(CameraConfigError, match="1-based"):
+        sdk_device_index(-1)
 
 
 def test_frame_is_hashable():
