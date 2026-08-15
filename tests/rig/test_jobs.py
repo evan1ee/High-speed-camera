@@ -106,6 +106,16 @@ def test_cancelling_a_running_capture_is_cancelled_not_failed(tmp_path):
     assert job.error is None
 
 
+def test_a_camera_fault_fails_the_job_and_is_not_read_as_a_cancel(tmp_path):
+    """The cancel path forgives the burst's own error, so a burst that broke
+    for a real reason must not be quietly relabelled as an operator stop."""
+    manager, _bus = _manager(tmp_path, roi_override=(320, 240))
+    job = manager.wait(manager.submit("piston_run", CFG), timeout=30)
+    assert job.state == "failed"
+    assert job.phase == "capture"
+    assert "320x240" in job.error
+
+
 def test_cancelling_an_unknown_job_returns_false(tmp_path):
     manager, _bus = _manager(tmp_path)
     assert manager.cancel("nope") is False
