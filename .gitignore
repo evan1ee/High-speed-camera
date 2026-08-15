@@ -19,3 +19,7 @@ settings/
 
 # Benchmark run outputs (regenerable; baseline.csv IS committed)
 benchmark/results/
+
+# coverage data
+.coverage
+.coverage.*
