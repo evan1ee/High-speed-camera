@@ -21,6 +21,14 @@ SDK boundary.
 Full replacement of the Tk app, decomposed into six slices. **This spec covers
 slices 0–2**; each later slice gets its own.
 
+**Pipelines built first.** The job model is generic, but slices 0–2 implement
+only the **piston** pipeline end to end. Spray angle (`capture → find
+injection → measure angle → video`) and monitor mode are the same shape and
+follow once the pattern is proven against the rig; building all three before
+any of them is validated would triple the surface under test for no earlier
+feedback. Calibration and Set Reference are inherently interactive — ROI
+dragging, line drawing — so they belong with the frontend in slice 5.
+
 | # | slice | delivers |
 |---|-------|----------|
 | 0 | Hardware seam | everything below becomes testable without the rig |
