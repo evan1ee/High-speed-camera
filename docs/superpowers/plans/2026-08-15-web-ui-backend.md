@@ -443,7 +443,7 @@ class FakeCamera:
         self._block += 1
         if self._drop_after is not None and self._block == self._drop_after + 1:
             self._block += 1                     # the gap a dropped frame leaves
-        pixels = injection_extract.load_gray(path)
+        pixels = load_gray(path)   # from hsc.measure_angle, NOT injection_extract
         height, width = pixels.shape
         if self._roi_override is not None:
             width, height = self._roi_override
