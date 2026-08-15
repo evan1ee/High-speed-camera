@@ -148,6 +148,18 @@ class CameraWorker:
                           dropped=result.dropped, truncated=result.truncated)
         return result
 
+    def close(self):
+        """Release the device, if this worker ever opened it.
+
+        The burst deliberately opens ONCE and leaves the camera open (see
+        ``capture_piston``), so something above has to decide when the process
+        is finished with it -- that owner is ``JobManager.close``. Idempotent,
+        because shutdown can be reached more than once.
+        """
+        if self._opened:
+            self._opened = False
+            self._guard("Close camera", self._device.close)
+
     @staticmethod
     def _guard(what, call, *args):
         """Give every layer above this one a SINGLE exception type to catch.
