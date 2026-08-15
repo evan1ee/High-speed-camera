@@ -153,6 +153,34 @@ def test_missing_raw_numeric_fields_stay_none(tmp_path):
     assert run.mm_per_px == 0.0594   # unaffected fields still import
 
 
+def test_unreadable_folder_is_skipped_without_stopping_the_scan(tmp_path):
+    """import_measure_root runs at every startup over ~90-180 folders; one
+    bad folder (locked, permission error, removed mid-scan) must not abort
+    the loop and discard the imported/skipped progress already collected.
+
+    Simulated here without mocking: a directory named "*_speed.csv" instead
+    of a file still matches summary.find_csv's glob, but reading it as text
+    raises PermissionError (an OSError) on Windows, IsADirectoryError
+    (also an OSError) on POSIX -- either way a real filesystem failure."""
+    root = tmp_path / "measure"
+    bad = root / "piston_2026-08-14-00-00-00_320x120_BAD"
+    bad.mkdir(parents=True)
+    (bad / f"{bad.name}_speed.csv").mkdir()
+    good = _run_folder(root, "piston_2026-08-14-14-28-09_320x120_IN37-30U")
+    store = RunStore(tmp_path / "rig.db")
+
+    result = import_measure_root(root, store)
+
+    assert result.imported == 1
+    assert len(result.skipped) == 1
+    name, reason = result.skipped[0]
+    assert name == bad.name
+    assert reason   # a real message, mirroring summary.collect's str(exc)
+    runs = store.list_runs()
+    assert len(runs) == 1
+    assert runs[0].measure_dir == str(good)
+
+
 def test_loose_files_in_measure_root_are_ignored(tmp_path):
     """hsc.summary.write_summary drops summary_<stamp>.csv directly into the
     measure root, beside the run folders -- iterdir() sees it too."""

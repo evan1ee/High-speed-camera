@@ -102,9 +102,16 @@ def import_measure_root(measure_root, store):
         if csv_path is None:
             result.skipped.append((folder.name, "no piston speed CSV"))
             continue
-        values = summary.read_run(folder)
+        try:
+            values = summary.read_run(folder)
+            raw = _raw_summary_values(csv_path, RAW_NUMERIC_KEYS | RAW_TEXT_KEYS)
+        except (RuntimeError, OSError) as exc:
+            # Mirrors summary.collect: a folder that can't be read (locked,
+            # permission error, removed mid-scan) must not abort the scan --
+            # the folders after it still need to import.
+            result.skipped.append((folder.name, str(exc)))
+            continue
         kind, captured_at, roi, label = parse_folder_name(folder.name)
-        raw = _raw_summary_values(csv_path, RAW_NUMERIC_KEYS | RAW_TEXT_KEYS)
         store.add_run(RunRecord(
             kind=kind, captured_at=captured_at or "", measure_dir=str(folder),
             label=label, roi=roi,
