@@ -1574,6 +1574,19 @@ of those behaviours gets a test **before** the Tk code is touched.
 - Consumes: `CameraDevice`, `Frame`, `CaptureConfig` (Tasks 1–3); `EventBus` (Task 7); `hsc.capture_image.with_label`, `hsc.injection_extract.make_dest_dir`, `hsc.piston_track.CAPTURE_META_NAME`.
 - Produces: `CameraWorker(device, bus, burst_dir)` with `capture_piston(cfg, duration_s, label="", prefix="frame", ext=".bmp", cancel=None) -> BurstResult(output_dir, frames, fps, dropped, elapsed_s)`.
 
+**Two contracts inherited from Task 3 — do not rediscover these the hard way:**
+
+1. **The camera index is 1-based.** `hsc.hardware.device.sdk_device_index`
+   translates to the SDK's 0-based index and `ImvCamera.open` already calls it.
+   Pass the operator's 1-based index straight through; never subtract here.
+2. **Normalise SDK errors at this boundary.** `ImvCamera` surfaces SDK failures
+   as plain `RuntimeError` (via `capture_image.check`), while `FakeCamera`
+   raises `CameraError`. The adapter cannot reconcile them — it is forbidden
+   both `try` and any logic. So `CameraWorker` must catch `RuntimeError` around
+   its device calls and re-raise as `CameraError`, giving every layer above one
+   exception type to catch. A test must pin this: a device whose `grab` raises
+   plain `RuntimeError` surfaces from `capture_piston` as `CameraError`.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
