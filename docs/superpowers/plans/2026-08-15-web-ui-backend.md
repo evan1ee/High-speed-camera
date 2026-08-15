@@ -3327,6 +3327,104 @@ git commit -m "feat: rig service entry point, layering guard, coverage gate"
 
 ---
 
+### Task 16: Retire the Tkinter app
+
+Operator decision, 2026-08-15: Tk is deleted at the end of slice 2, as the spec
+says. Do this **last**, after Task 15 is green.
+
+**Know what this costs before starting.** Deleting the GUI removes the only
+driver for two capabilities the API does not yet have, because slices 0–2
+implement the piston pipeline only:
+
+- **Monitor mode loses its driver.** `hsc/monitor.py` and `hsc/frame_writer.py`
+  are used *only* by `gui/camera_worker.py`. **Keep both modules** — they are
+  camera-free, have their own tests and a CLI (`python -m hsc.monitor <run>
+  --compare`) — but nothing can start a monitoring session until a later slice.
+- **Interactive calibration and reference-line drawing go.** `calibrate_ui.py`
+  and `reference_ui.py` are Tk dialogs, rebuilt in React in slice 5. The
+  non-interactive paths survive: `python -m hsc.calibrate_scale <still>
+  --ref-mm 5 --roi1 ... --roi2 ...`, Auto Calibrate via `auto_calibrate_image`,
+  and `set_reference_from_image`. Git history holds the dialogs for the port.
+- **Spray-angle capture** must go via `python -m hsc.capture_image --burst`,
+  then the analysis CLIs.
+
+**Files:**
+- Delete: `hsc/gui/` (12 files), `hsc/capture_gui.py`, `hsc/calibrate_ui.py`,
+  `hsc/reference_ui.py`, `run_gui.py`
+- Delete: `tests/test_gui_structure.py`, `tests/test_piston_gui_wiring.py`,
+  `tests/test_monitor_wiring.py`, `tests/test_smart_dispatch.py`
+- **Trim, do not delete:** `tests/test_auto_pick.py`, `tests/test_jet_in_rect.py`,
+  `tests/test_ref_lines_toggle.py`, `tests/test_v2_toggle.py`
+- Modify: `CLAUDE.md`, `packaging/HighSpeedCamera.spec`, `pyproject.toml`
+
+- [ ] **Step 1: Separate the analysis assertions from the GUI ones**
+
+Those four test files assert analysis behaviour but reach it through GUI
+symbols. For each, run it and read it:
+
+```powershell
+uv run python -m pytest tests/test_auto_pick.py tests/test_jet_in_rect.py tests/test_ref_lines_toggle.py tests/test_v2_toggle.py -v
+```
+
+Keep every assertion about `measure_angle` / `measure_folder` output. Replace
+GUI plumbing (`CaptureGui`, Tk variables, `inspect.getsource(layout)`) with
+direct calls — e.g. a test that drove `auto_pick_var` becomes a direct
+`measure_folder(..., auto_pick=True)` call. If a test asserts *only* GUI
+wiring, delete that test function alone.
+
+- [ ] **Step 2: Verify the analysis suite is intact before deleting anything**
+
+```powershell
+uv run python -m pytest -q
+```
+Record the count. It must drop by exactly the number of GUI-only tests removed
+— any other drop means analysis coverage was lost in Step 1.
+
+- [ ] **Step 3: Delete the Tk code**
+
+```powershell
+git rm -r hsc/gui
+git rm hsc/capture_gui.py hsc/calibrate_ui.py hsc/reference_ui.py run_gui.py
+git rm tests/test_gui_structure.py tests/test_piston_gui_wiring.py tests/test_monitor_wiring.py tests/test_smart_dispatch.py
+```
+
+- [ ] **Step 4: Follow the references**
+
+`hsc/gui/config.py` held constants other modules may import (`INJECTION_DIR`,
+`MEASURE_DIR`, `PAD_BEFORE`, `PAD_AFTER`, `CAPTURE_ROIS`, `ROI_FPS`,
+`PISTON_ASPECT`). Find every user and move the survivors into `hsc/rig/paths.py`:
+
+```powershell
+Select-String -Path "hsc\*.py","hsc\rig\*.py","hsc\api\*.py","tests\**\*.py" -Pattern "gui\.config|gui import config"
+```
+
+Update `packaging/HighSpeedCamera.spec` (its entry point is `run_gui.py`) — the
+frozen build now targets `hsc.api`, or is dropped from this slice if the web
+build is not yet packaged. Remove the `--selftest` reference from `CLAUDE.md`.
+
+- [ ] **Step 5: Confirm nothing imports Tk**
+
+```powershell
+Select-String -Path "hsc\**\*.py","tests\**\*.py" -Pattern "import tkinter|from hsc.gui"
+```
+Expected: no matches.
+
+- [ ] **Step 6: Full suite and coverage**
+
+```powershell
+uv run python -m pytest -q
+uv run python -m pytest --cov=hsc.hardware --cov=hsc.rig --cov=hsc.api --cov-fail-under=100 -q
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "refactor: retire the Tkinter app, the rig is driven by the API"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
@@ -3352,11 +3450,15 @@ git commit -m "feat: rig service entry point, layering guard, coverage gate"
 **Not covered by any task, deliberately:** live preview *production* (the
 worker publishes `preview` events but nothing yet grabs continuously — that
 arrives with slice 4, when a UI exists to watch it), spray-angle and monitor
-pipelines, calibration and reference dialogs, and Tk deletion. Tk deletion
-should happen only after slice 4, despite the spec's "retire once the API
-works" — deleting it at slice 2 removes the only working preview while the
-worker's continuous-preview loop is still unwritten. **Flagged for the
-operator's decision at the end of Task 15.**
+pipelines, and the calibration and reference dialogs.
+
+**Tk deletion — resolved 2026-08-15.** I argued for deferring it to slice 4,
+because deleting Tk at slice 2 removes the only working preview while the
+worker's continuous-preview loop is still unwritten. The operator decided in
+favour of the spec: **delete at slice 2**, now Task 16. The cost is stated at
+the head of that task so it is deliberate rather than discovered — between this
+slice and slice 4 there is no preview, no monitor mode, and no interactive
+calibration; the rig is driven by the API and the CLIs.
 
 **Type consistency:** `RunRecord` field names match between `store.py`,
 `importer.py` and `jobs.py`; `RigPaths(captures, injections, measures)` is used
