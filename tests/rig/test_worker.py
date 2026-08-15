@@ -21,9 +21,18 @@ BURST = Path(__file__).resolve().parents[1] / "fixtures" / "burst_320x120"
 CFG = CaptureConfig(width=320, height=120, exposure_us=500.0)
 
 
-def _worker(tmp_path, **kwargs):
+def _worker(tmp_path, bus=None, **kwargs):
     cam = FakeCamera(BURST, **kwargs)
-    return CameraWorker(cam, EventBus(), tmp_path / "captures"), cam
+    return CameraWorker(cam, bus or EventBus(), tmp_path / "captures"), cam
+
+
+def _payloads(q):
+    """Drain a subscriber into {kind: payload}."""
+    seen = {}
+    while not q.empty():
+        event = q.get_nowait()
+        seen[event.kind] = event.payload
+    return seen
 
 
 def test_burst_saves_every_frame_it_grabbed(tmp_path):
@@ -73,6 +82,36 @@ def test_the_camera_is_stopped_before_it_is_reprogrammed(tmp_path):
     assert cam.calls[:3] == ["stop", "configure", "start"]
 
 
+def test_the_camera_is_opened_once_not_once_per_burst(tmp_path):
+    """ImvCamera.open builds a NEW handle every call and never closes the old
+    one, so opening per burst would leak handle #1 and let the SDK refuse the
+    second burst of the process. Tk opened once per camera-thread lifetime;
+    the web backend serves many runs from one long-lived process."""
+
+    class OpensOnce(FakeCamera):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.opens = 0
+
+        def open(self, index):
+            self.opens += 1
+            if self.opens > 1:
+                raise CameraError("the camera is already open")
+            super().open(index)
+
+        def rewind(self):                       # replay the fixture again
+            self._index = 0
+
+    cam = OpensOnce(BURST)
+    worker = CameraWorker(cam, EventBus(), tmp_path / "captures")
+    first = worker.capture_piston(CFG, duration_s=10.0)
+    cam.rewind()
+    second = worker.capture_piston(CFG, duration_s=10.0)
+    assert cam.opens == 1
+    assert first.frames == second.frames == 12
+    assert first.output_dir != second.output_dir
+
+
 def test_a_frame_of_the_wrong_size_aborts_the_burst(tmp_path):
     """mm/px is calibrated at one ROI; a burst at another would be measured
     against the wrong magnification, so refuse rather than report wrong mm."""
@@ -95,9 +134,32 @@ def test_timing_file_records_ticks_relative_to_the_first_frame(tmp_path):
 
 
 def test_dropped_frames_are_counted_from_block_id_gaps(tmp_path):
-    worker, _cam = _worker(tmp_path, drop_after=3)
+    bus = EventBus()
+    worker, _cam = _worker(tmp_path, bus=bus, drop_after=3)
+    q = bus.subscribe()
     result = worker.capture_piston(CFG, duration_s=10.0)
     assert result.dropped == 1
+    # The Tk build printed "[Piston warning] N frame(s) dropped"; the operator
+    # can only still be told if the count actually rides on the event.
+    assert _payloads(q)["capture_done"]["dropped"] == 1
+
+
+def test_a_burst_that_ended_early_is_flagged_as_truncated(tmp_path):
+    """The camera stopped delivering before the burst was over. elapsed is
+    measured to the break, so fps still reads ~1048 and the metadata is short
+    but internally consistent -- a stroke truncated mid-travel would otherwise
+    yield a plausible, quietly low peak speed. Say so instead."""
+    from hsc import piston_track
+    bus = EventBus()
+    worker, _cam = _worker(tmp_path, bus=bus)          # 12 frames, 10 s asked
+    q = bus.subscribe()
+    result = worker.capture_piston(CFG, duration_s=10.0)
+    meta = json.loads(
+        (result.output_dir / piston_track.CAPTURE_META_NAME
+         ).read_text(encoding="utf-8"))
+    assert result.truncated is True
+    assert meta["truncated"] is True
+    assert _payloads(q)["capture_done"]["truncated"] is True
 
 
 def test_a_one_frame_burst_still_writes_usable_timing(tmp_path):
@@ -137,6 +199,8 @@ def test_cancel_stops_the_burst_and_keeps_what_was_grabbed(tmp_path):
     result = worker.capture_piston(CFG, duration_s=10.0, cancel=cancel)
     assert 0 < result.frames < 12
     assert len(list(result.output_dir.glob("frame_*.bmp"))) == result.frames
+    # The operator stopped it: a short burst, but not a camera that failed.
+    assert result.truncated is False
 
 
 def test_a_burst_that_grabbed_nothing_is_an_error(tmp_path):
@@ -173,11 +237,23 @@ def test_a_camera_error_is_passed_through_unchanged(tmp_path):
 
 
 def test_progress_and_completion_are_published(tmp_path):
+    """The payload is the whole point: it is what a UI has instead of the Tk
+    build's status lines, so assert its contents, not just the event kinds."""
     bus = EventBus()
     worker = CameraWorker(FakeCamera(BURST), bus, tmp_path / "captures")
     q = bus.subscribe()
-    worker.capture_piston(CFG, duration_s=10.0)
-    kinds = []
-    while not q.empty():
-        kinds.append(q.get_nowait().kind)
-    assert "capture_started" in kinds and "capture_done" in kinds
+    result = worker.capture_piston(CFG, duration_s=10.0)
+    seen = _payloads(q)
+    assert set(seen) == {"capture_started", "capture_done"}
+    assert seen["capture_started"] == {
+        "output_dir": str(result.output_dir),
+        "duration_s": 10.0,
+        "size": "320x120",
+    }
+    assert seen["capture_done"] == {
+        "output_dir": str(result.output_dir),
+        "frames": 12,
+        "fps": result.fps,
+        "dropped": 0,
+        "truncated": True,          # the fixture is shorter than the burst
+    }

@@ -42,6 +42,13 @@ class BurstResult:
     fps: float
     dropped: int
     elapsed_s: float
+    #: The camera stopped delivering before the requested duration was up. A
+    #: truncated burst is NOT self-evident downstream: ``elapsed_s`` is
+    #: measured to the break, so ``fps`` still reads ~1048 and
+    #: ``detect_piston_bounds`` scales its trigger off the travel it can see,
+    #: happily reporting a shortened stroke and a plausible, quietly low peak
+    #: speed. This flag is the only warning anyone gets.
+    truncated: bool
 
 
 class CameraWorker:
@@ -49,6 +56,7 @@ class CameraWorker:
         self._device = device
         self._bus = bus
         self._burst_dir = Path(burst_dir)
+        self._opened = False
 
     def capture_piston(self, cfg, duration_s, label="", prefix="frame",
                        ext=".bmp", cancel=None):
@@ -60,9 +68,17 @@ class CameraWorker:
         signal, which says nothing about the piston, and keeping the two apart
         means the tuned spray pipeline cannot regress when this one changes.
         """
+        # Open ONCE for the worker's lifetime, as the Tk camera thread did.
+        # ImvCamera.open builds a new handle and calls IMV_Open every time
+        # without closing the previous one, so opening per burst would leak the
+        # first handle and let the SDK refuse the second burst -- and this
+        # process is long-lived now, serving run after run.
+        #
         # The camera index is 1-BASED throughout the rig; the SDK's 0-based one
         # is reached only through device.sdk_device_index. Never subtract here.
-        self._guard("Open camera", self._device.open, 1)
+        if not self._opened:
+            self._guard("Open camera", self._device.open, 1)
+            self._opened = True
         # Program THIS burst's ROI and exposure before grabbing. Configuration
         # otherwise happens only when the grab thread starts, so the burst
         # inherits whatever the preview last set -- and the sensor keeps the
@@ -88,14 +104,19 @@ class CameraWorker:
                           size=f"{cfg.width}x{cfg.height}")
 
         clones, ticks, block_ids = [], [], []
+        truncated = False
         started = time.perf_counter()
         deadline = started + duration_s
         try:
             while time.perf_counter() < deadline:
                 if cancel is not None and cancel():
-                    break
+                    break               # the operator stopped it, not a fault
                 frame = self._guard("Get frame", self._device.grab, 1000)
                 if frame is None:
+                    # The camera stopped delivering with time left on the
+                    # clock. Everything grabbed so far is kept -- but see
+                    # BurstResult.truncated: nothing downstream can infer this.
+                    truncated = True
                     break
                 try:
                     self._check_size(frame, cfg)
@@ -113,16 +134,18 @@ class CameraWorker:
                 self._guard("Save frame", self._device.save, clone,
                             capture_image.make_frame_path(
                                 output_dir, prefix, number, ext))
-            dropped = _dropped(block_ids)
-            _write_meta(output_dir, fps, ticks, len(clones), dropped, elapsed,
-                        cfg)
+            result = BurstResult(output_dir, len(clones), fps,
+                                 _dropped(block_ids), elapsed, truncated)
+            _write_meta(output_dir, result, ticks, cfg)
         finally:
             for clone in clones:
                 self._guard("Release frame", self._device.release, clone)
 
-        result = BurstResult(output_dir, len(clones), fps, dropped, elapsed)
+        # This payload is all a UI gets -- the Tk build's "N frame(s) dropped"
+        # warning line lives here now.
         self._bus.publish("capture_done", output_dir=str(output_dir),
-                          frames=result.frames, fps=fps, dropped=dropped)
+                          frames=result.frames, fps=result.fps,
+                          dropped=result.dropped, truncated=result.truncated)
         return result
 
     @staticmethod
@@ -167,16 +190,20 @@ def _dropped(block_ids):
     return max(0, (block_ids[-1] - block_ids[0] + 1) - len(block_ids))
 
 
-def _write_meta(output_dir, fps, ticks, captured, dropped, elapsed, cfg):
+def _write_meta(output_dir, result, ticks, cfg):
     base = ticks[0] if ticks else 0
     (output_dir / piston_track.CAPTURE_META_NAME).write_text(json.dumps({
-        "fps": fps,
+        "fps": result.fps,
         # Per-frame SDK timestamp relative to the first frame, in RAW TICKS.
         # Nominally microseconds, but the vendor wrapper does not document the
         # unit, so measure_piston.resolve_timebase infers it against this
         # measured fps before trusting it -- see the module docstring.
         "frame_times_us": [tick - base for tick in ticks],
-        "captured": captured, "dropped": dropped, "elapsed_s": elapsed,
+        "captured": result.frames, "dropped": result.dropped,
+        "elapsed_s": result.elapsed_s,
+        # Travels with the frames, so a run imported later still says whether
+        # the stroke it holds is the whole stroke. See BurstResult.truncated.
+        "truncated": result.truncated,
         "aspect": f"{cfg.width}x{cfg.height}",
         "width": cfg.width, "height": cfg.height,
     }), encoding="utf-8")
