@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Do not modify any module in `hsc/` outside `hsc/hardware/`, `hsc/rig/`, `hsc/api/`.** The analysis modules are validated against rig data from 4 U to 40 U on two injectors. If a change there seems necessary, stop and ask.
+- **Do not modify any module in `hsc/` outside `hsc/hardware/`, `hsc/rig/`, `hsc/api/`.** The analysis modules are validated against rig data from 4 U to 40 U on two injectors. If a change there seems necessary, stop and ask. The single exception is **Task 16**, which deletes the Tk layer (`hsc/gui/`, `hsc/capture_gui.py`, `hsc/calibrate_ui.py`, `hsc/reference_ui.py`) — deletion of the UI layer, never an edit to an analysis module. Tasks 1–15 modify nothing in `hsc/` outside the three new packages.
 - **`hsc/rig/` must not import `fastapi`, `starlette`, `uvicorn`, or `hsc.api`.** Enforced by a test.
 - **`hsc/hardware/imv.py` must contain no logic** — no `if`, `for`, `while`, comprehension, or arithmetic. Enforced by a test. It is the only file excluded from coverage.
 - **Coverage: 100%** for `hsc/hardware/`, `hsc/rig/`, `hsc/api/`, enforced with `--cov-fail-under=100`.
