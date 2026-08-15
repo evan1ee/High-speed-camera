@@ -36,7 +36,7 @@ Camera-free and Tk-free, so it is unit-testable headless.
 import argparse
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import cv2
@@ -226,10 +226,26 @@ class BarrelProfile:
     #: True for a short ROI (see SHORT_ROI_ROWS), which uses the visible-edge
     #: rule instead of the blackness rule.
     short: bool = False
+    #: How the per-frame edge threshold is formed. "global" uses the run's own
+    #: dark/bright levels (the original rule); the "row-*" modes derive a
+    #: threshold from EACH ROW of EACH FRAME, which is what a piston whose
+    #: apparent darkness changes with position needs. Chosen by measurement --
+    #: see choose_edge_mode -- never assumed.
+    mode: str = "global"
 
     @property
     def thresh(self):
         return 0.5 * (self.dark + self.bright)
+
+    def row_thresholds(self, smooth):
+        """Per-row threshold for one frame's band, following ``mode``."""
+        if self.mode == "global":
+            return np.full(smooth.shape[0], self.edge_thresh)
+        lo = np.percentile(smooth, 10, axis=1)
+        hi = np.percentile(smooth, 90, axis=1)
+        if self.mode == "row-mid":
+            return 0.5 * (lo + hi)
+        return lo + BODY_DARK_FRAC * (hi - lo)          # "row-frac"
 
     @property
     def body_thresh(self):
@@ -437,7 +453,8 @@ def edge_columns(gray, profile, min_dark_run=MIN_DARK_RUN):
     rows_idx = np.arange(band.shape[0])
 
     # First run of MIN_BODY_RUN consecutive genuinely-black px, per row.
-    body = smooth < profile.edge_thresh
+    thresholds = profile.row_thresholds(smooth)
+    body = smooth < thresholds[:, None]
     if GAP_CLOSE > 1:
         body = binary_closing(body, structure=np.ones((1, GAP_CLOSE), dtype=bool))
 
@@ -460,7 +477,8 @@ def edge_columns(gray, profile, min_dark_run=MIN_DARK_RUN):
     valid = (lengths >= min_len) & (starts >= 1) & (starts < width - 2)
     if valid.any():
         probe = np.clip(starts[valid] - 3, 0, width - 1)
-        left_ok[valid] = smooth[rows_idx[valid], probe] > profile.edge_thresh
+        left_ok[valid] = (smooth[rows_idx[valid], probe]
+                          > thresholds[rows_idx[valid]])
     keep = valid & left_ok
     if not keep.any():
         return np.empty(0, dtype=int), np.empty(0, dtype=float)
@@ -506,6 +524,71 @@ def _walk_to_visible(rows, starts, threshold, max_walk=SHORT_MAX_WALK):
         else:
             xs[i] = float(col)
     return xs
+
+
+#: Candidate edge rules, tried in this order; ties go to the earlier one, so a
+#: run that the original rule handles keeps it and measures exactly as before.
+EDGE_MODES = ("global", "row-frac", "row-mid")
+MODE_SAMPLE = 24           # frames sampled when choosing
+MODE_MIN_COVERAGE = 0.5    # a mode that finds few rows is not a candidate
+MODE_TIE_FRAC = 0.8        # a rival must be this much straighter to win
+MODE_COVERAGE_KEEP = 0.9   # ... while keeping this share of the best coverage
+
+
+def choose_edge_mode(frames, profile, sample=MODE_SAMPLE):
+    """Pick the edge rule that actually produces a straight edge on this run.
+
+    The piston's apparent darkness depends on where it sits in the barrel
+    whenever it is lit rather than backlit, and no single threshold covers
+    both cases: on rig run 2026-08-14-14-28-09 the body is grey with an
+    internal gradient and only a per-row midpoint finds its boundary (RMS
+    0.30 px against 5.44 for the global rule), while on 2026-08-13-10-32-48
+    the body is near-black with a mid-grey collar and that same midpoint
+    grabs the collar instead (7.74 against 0.76).
+
+    Rather than guess a fifth threshold, measure: run each candidate over a
+    sample of frames and keep the one whose per-row edges lie straightest
+    about a fitted line. A correct edge is straight because the piston face
+    is; a rule picking up gradient or texture scatters. Ties favour the
+    original rule, so runs that already work are untouched.
+    """
+    frames = list(frames)
+    if not frames:
+        return profile
+    idx = np.unique(np.linspace(0, len(frames) - 1,
+                                min(sample, len(frames))).astype(int))
+    grays = [_as_gray(frames[i]) for i in idx]
+
+    scored = []
+    for mode in EDGE_MODES:
+        candidate = replace(profile, mode=mode)
+        spreads, covers = [], []
+        for gray in grays:
+            rows, xs = edge_columns(gray, candidate)
+            covers.append(rows.size / max(1, profile.n_rows))
+            if rows.size < MIN_EDGE_POINTS:
+                continue
+            k, b, _n, _vx, _vy = ma.tls_fit(rows.astype(float), xs)
+            spreads.append(float(ma._robust_sigma(xs - (k * rows + b))))
+        coverage = float(np.mean(covers)) if covers else 0.0
+        if not spreads or coverage < MODE_MIN_COVERAGE:
+            continue
+        scored.append((mode, float(np.median(spreads)), coverage))
+    if not scored:
+        return profile
+
+    # Straightness alone is not enough: a mode can look tidier simply by
+    # finding fewer rows. On the 4 U run 2026-08-14-10-40-35 the per-row
+    # midpoint scored the straighter edge while its coverage fell from 1.00 to
+    # 0.65 -- fewer, better-behaved rows describing the same edge no better.
+    # So a mode must keep most of the rows the best mode finds to compete.
+    best_coverage = max(coverage for _m, _r, coverage in scored)
+    viable = [s for s in scored if s[2] >= MODE_COVERAGE_KEEP * best_coverage]
+    best_mode, best_rms, _cov = viable[0]
+    for mode, rms, _coverage in viable[1:]:
+        if rms < best_rms * MODE_TIE_FRAC:      # ties keep the earlier mode
+            best_mode, best_rms = mode, rms
+    return replace(profile, mode=best_mode)
 
 
 def refine_band(frames, profile, sample=AGREE_SAMPLE, tol=AGREE_TOL):
@@ -1076,12 +1159,13 @@ def extract_piston_event(source_dir, dest_base, before=30, after=30,
 
     scanned = np.zeros(len(files), dtype=bool)
     if fast:
-        profile = build_profile(files)
+        profile = choose_edge_mode(files, build_profile(files))
         positions = scan_positions(files, profile, progress=progress,
                                    scanned=scanned)
         tracked = {"x": positions, "profile": profile}
     else:
-        tracked = track(files, progress=progress)
+        tracked = track(files, profile=choose_edge_mode(
+            files, build_profile(files)), progress=progress)
         scanned[:] = True
     # Diagnose a contrast failure BEFORE blaming the stroke. The piston is
     # found as a run of genuinely black pixels, so an over-exposed burst --
@@ -1200,9 +1284,126 @@ def _window_timing(fps, frame_times_us, copy_start, copy_end):
     return fps, [int(t - base) for t in times]
 
 
+#: Does the piston silhouette well enough to be measured? Calibrated on four
+#: rig runs -- two that measure correctly and two that do not:
+#:
+#:   run                verdict  span  clip%  darkest piston
+#:   2026-08-13-10-32-48  good    169    82        5
+#:   2026-08-14-10-10-31  good    153    86        6
+#:   2026-08-14-14-28-09  bad     167    97       14
+#:   2026-08-14-14-48-39  bad     102    85       18
+#:
+#: Only the last column separates them, and it is the physically meaningful
+#: one: a backlit piston is a silhouette and reaches near-black somewhere,
+#: while a piston that is being LIT bottoms out in the teens no matter how
+#: bright the barrel behind it. Contrast span and clipping look diagnostic but
+#: are not -- 2026-08-14-14-28-09 scores as well as either good run on both,
+#: and still cannot be measured. They are reported, not judged.
+#:
+#: Four runs is a small sample; treat this as a guide to tuning the lighting,
+#: not proof that a run is good.
+CHECK_PISTON_BLACK = 10    # darkest decile of the piston, in grey levels
+CHECK_BLOCKS = 8           # column blocks reported across the frame
+CHECK_CLIP_NOTE = 0.90     # advisory only: barrel clipped beyond this
+CHECK_SPAN_NOTE = 120      # advisory only: barrel minus piston
+
+
+def lighting_report(source_dir, sample=PROFILE_SAMPLE):
+    """Is the piston backlit well enough to measure? Returns a report dict.
+
+    Reads a folder of frames and reports, per column block, how bright the
+    empty barrel gets (temporal max) and how dark the piston gets while
+    passing (temporal min). Both are needed: a barrel that is bright enough
+    but a piston that never goes dark in some column is exactly the failure
+    that has cost several rig runs, and it is invisible in a single frame.
+    """
+    files = injection_extract.list_frames(source_dir)
+    if not files:
+        raise RuntimeError(f"No image frames found in {source_dir}")
+    profile = build_profile(files)
+    idx = np.unique(np.linspace(0, len(files) - 1, min(sample, len(files))
+                                ).astype(int))
+    stack = np.stack([_as_gray(files[i]).astype(np.uint8) for i in idx])
+    band = slice(profile.row_lo, profile.row_hi + 1)
+    barrel = stack.max(axis=0)[band]        # brightest each pixel ever was
+    piston = stack.min(axis=0)[band]        # darkest each pixel ever was
+
+    width = barrel.shape[1]
+    step = max(1, width // CHECK_BLOCKS)
+    blocks = []
+    for start in range(0, width, step):
+        stop = min(start + step, width)
+        blocks.append({
+            "columns": (start, stop - 1),
+            "barrel": float(barrel[:, start:stop].mean()),
+            "piston": float(piston[:, start:stop].mean()),
+        })
+    # The verdict: how black does the piston get where it is darkest? A
+    # per-column temporal minimum, then its darkest decile -- taking a decile
+    # rather than the single darkest column keeps one lucky pixel from passing
+    # a badly lit rig. Deliberately NOT judged per swept column: "the piston
+    # did not darken here" and "the piston never reached here" look identical
+    # from the outside (84 vs 89 grey of darkening on the two runs above), so
+    # a per-column rule fails good runs at the resting edge.
+    column_piston = piston.mean(axis=0)
+    blackest = float(np.percentile(column_piston, 10))
+    span = float(barrel.mean() - piston.mean())
+    saturated = float((barrel >= 253).mean())
+
+    problems, notes = [], []
+    if blackest > CHECK_PISTON_BLACK:
+        problems.append(
+            f"the piston never gets blacker than {blackest:.0f} grey (needs "
+            f"<= {CHECK_PISTON_BLACK}). It is being LIT rather than "
+            "silhouetted, so its apparent darkness changes with where it sits "
+            "in the barrel and no single threshold can follow the edge across "
+            "the travel. Light it from behind, and reduce rather than raise "
+            "the level -- more light adds scatter onto the piston face.")
+    if saturated > CHECK_CLIP_NOTE:
+        notes.append(f"{100 * saturated:.0f}% of the barrel is clipped at 253+; "
+                     "headroom is gone, though runs at 82-86% measure fine")
+    if span < CHECK_SPAN_NOTE:
+        notes.append(f"barrel-to-piston contrast is {span:.0f} grey levels, "
+                     "lower than the 153-169 of runs that measure well")
+    return {
+        "source_dir": str(source_dir), "frames": len(files),
+        "band": profile.as_dict(), "blocks": blocks, "span": span,
+        "saturated": saturated, "blackest": blackest,
+        "problems": problems, "notes": notes, "ok": not problems,
+    }
+
+
+def print_lighting_report(report):
+    print(f"{report['frames']} frames, band rows "
+          f"{report['band']['row_lo']}-{report['band']['row_hi']}")
+    print("  columns    " + "".join(
+        f"{b['columns'][0]:>6d}" for b in report["blocks"]))
+    print("  barrel     " + "".join(
+        f"{b['barrel']:>6.0f}" for b in report["blocks"]) + "   (want high)")
+    print("  piston     " + "".join(
+        f"{b['piston']:>6.0f}" for b in report["blocks"])
+        + "   (dark where it travels)")
+    print(f"\n  darkest piston {report['blackest']:.0f}  "
+          f"(want <= {CHECK_PISTON_BLACK}; good runs give 5-6)")
+    print(f"  contrast span  {report['span']:.0f}      (informational)")
+    print(f"  barrel clipped {100 * report['saturated']:.0f}%     "
+          "(informational)")
+    for note in report["notes"]:
+        print(f"  note -- {note}")
+    if report["ok"]:
+        print("\n  PASS -- the piston silhouettes; the edge can be followed.")
+    else:
+        print()
+        for problem in report["problems"]:
+            print(f"  FAIL -- {problem}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", help="a burst folder of piston frames")
+    parser.add_argument("--check", action="store_true",
+                        help="report on the lighting instead of finding the "
+                             "stroke (works on any folder of frames)")
     parser.add_argument("--dest", default=None, help="destination base folder")
     parser.add_argument("--before", type=int, default=30)
     parser.add_argument("--after", type=int, default=30)
@@ -1211,6 +1412,11 @@ def main():
     parser.add_argument("--fast", action="store_true",
                         help="V2: parallel scan instead of a full per-frame fit")
     args = parser.parse_args()
+
+    if args.check:
+        report = lighting_report(args.source)
+        print_lighting_report(report)
+        return 0 if report["ok"] else 1
 
     def progress(done, total):
         print(f"\rTracking {done}/{total}", end="", flush=True)

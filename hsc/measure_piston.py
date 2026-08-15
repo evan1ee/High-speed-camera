@@ -266,6 +266,11 @@ def measure_folder(source_dir, dest_base=None, fps=None, mm_per_px=None,
     # narrowed to the piston's flat face (see piston_track.refine_band).
     profile = piston_track.refine_band(
         files, piston_track.build_profile(files))
+    # Which edge rule this run needs is measured, not assumed -- a piston that
+    # is lit rather than backlit changes apparent darkness as it travels, and
+    # no single threshold covers that and a backlit one. Ties keep "global",
+    # so runs that already measured well are unaffected.
+    profile = piston_track.choose_edge_mode(files, profile)
     tracked = piston_track.track(files, profile=profile, progress=progress)
     fits = tracked["fits"]
 
