@@ -93,6 +93,13 @@ def test_clone_survives_release_of_the_original():
     assert np.array_equal(clone.pixels, original)
 
 
+def test_configure_rejects_a_value_that_is_not_a_capture_config():
+    cam = FakeCamera(BURST)
+    cam.open(1)
+    with pytest.raises(CameraError, match="CaptureConfig"):
+        cam.configure({"width": 320, "height": 120})
+
+
 def test_grab_before_start_is_an_error():
     cam = FakeCamera(BURST)
     cam.open(1)
