@@ -29,7 +29,7 @@ class CameraConfigError(CameraError):
 ROI_INCREMENT = 4
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Frame:
     """One grabbed frame.
 
@@ -38,6 +38,9 @@ class Frame:
     stale stored value, and gaps in ``block_id`` are the only evidence of a
     dropped frame. ``timestamp`` is in RAW SDK TICKS -- the unit is inferred
     later by ``measure_piston.resolve_timebase``; never convert it here.
+
+    Frames compare by identity (not pixel value); compare pixel data explicitly
+    with ``np.array_equal(frame1.pixels, frame2.pixels)``.
     """
 
     width: int

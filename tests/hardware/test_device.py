@@ -38,3 +38,28 @@ def test_capture_config_defaults_match_the_rig():
     assert cfg.pixel_format == "Mono8"
     assert cfg.center_roi is True
     assert cfg.frame_rate is None      # the camera free-runs; see CLAUDE.md
+
+
+def test_frame_equality_is_by_identity_not_pixel_value():
+    """Two distinct frames holding equal pixels are not equal (identity semantics).
+    Comparison must return a plain bool, not an ambiguous ndarray."""
+    pixels = np.zeros((4, 8), dtype=np.uint8)
+    frame1 = Frame(8, 4, 0, 0, pixels)
+    frame2 = Frame(8, 4, 0, 0, pixels.copy())
+    # Both frames hold identical pixel data, but they are not equal.
+    assert frame1 is not frame2
+    result = frame1 == frame2
+    assert isinstance(result, (bool, np.bool_))
+    assert not result
+
+
+def test_frame_is_hashable():
+    """Frame objects are hashable and can be added to sets or used as dict keys."""
+    pixels = np.zeros((4, 8), dtype=np.uint8)
+    frame = Frame(8, 4, 0, 0, pixels)
+    # Should not raise TypeError: unhashable type
+    hash_value = hash(frame)
+    assert isinstance(hash_value, int)
+    # Should be usable in a set
+    frame_set = {frame}
+    assert frame in frame_set
