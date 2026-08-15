@@ -2355,6 +2355,14 @@ git commit -m "test: pipeline end to end against a fake camera"
 - Consumes: `JobManager`, `RunStore`, `ControlLease`, `EventBus`, `RigPaths`.
 - Produces: `create_app(services: RigServices) -> FastAPI`; `RigServices(store, jobs, lease, bus, paths, spa_dir=None, cors_origins=())`; `to_error_code(exc) -> tuple[str, int]`.
 
+**Inherited from Tasks 8–9 — the camera's lifetime ends here.** `CameraWorker`
+deliberately never calls `device.close()`, because it cannot know when the
+process is finished with the device; `JobManager.close()` (cancel → join →
+close) exists for that, and **nothing calls it yet**. `create_app` must wire it
+into FastAPI's shutdown (a lifespan handler), or the camera is never released
+and the next process cannot open it. A test must pin this: a `FakeCamera`
+recording its closes is released when the app's lifespan exits.
+
 - [ ] **Step 1: Add dependencies**
 
 ```bash
@@ -2820,6 +2828,16 @@ git commit -m "feat: runs, csv and media endpoints"
 **Interfaces:**
 - Consumes: `JobManager`, `ControlLease`.
 - Produces: `register(app, services)` adding `POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `POST /api/lease/claim|release|heartbeat`.
+
+**Inherited from Task 9 — the lease is not enough to protect the camera.**
+The lease stops a *second client* from driving the rig, but one lease holder
+can still post two camera jobs, and two bursts on one handle interleave
+`stop → configure → start` — job B's `stop()` truncates job A's burst into a
+plausible, silently low peak speed. `JobManager.submit` therefore raises a
+typed `RigBusy` when a camera job is already `queued`/`running`. Map it to
+**409 Conflict** in `to_error_code` (code `CAMERA_BUSY`, already named in the
+spec) and pin it with a test: claim the lease once, post two camera jobs, and
+assert the second returns 409 rather than starting.
 
 - [ ] **Step 1: Write the failing test**
 
