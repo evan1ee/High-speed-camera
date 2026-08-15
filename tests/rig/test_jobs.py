@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from hsc.hardware.device import CaptureConfig
+from hsc.hardware.device import CameraError, CaptureConfig
 from hsc.hardware.fake import FakeCamera
+from hsc.rig import jobs as jobs_module
 from hsc.rig.events import EventBus
-from hsc.rig.jobs import JobCancelled, JobManager, RigPaths
+from hsc.rig.jobs import Job, JobCancelled, JobManager, RigBusy, RigPaths
 from hsc.rig.store import RunStore
 from hsc.rig.worker import CameraWorker
 
@@ -114,6 +115,115 @@ def test_a_camera_fault_fails_the_job_and_is_not_read_as_a_cancel(tmp_path):
     assert job.state == "failed"
     assert job.phase == "capture"
     assert "320x240" in job.error
+
+
+def test_a_fault_while_cancelling_still_fails_the_job(tmp_path):
+    """The cancel unwind forgives exactly one thing: a burst that stopped
+    before its first frame. A burst that broke while WRITING must stay a
+    failure -- the flag is set for the whole unwind, and `capture_piston`
+    saves every frame after the loop ends, so reporting "cancelled" there
+    would tell the operator the run was stopped when the frames were in fact
+    never written."""
+    cam = _GatedCamera(BURST, save_error="the disk is full")
+    manager, _bus = _manager(tmp_path, camera=cam)
+    job_id = manager.submit("piston_run", CFG)
+    assert cam.grabbing.wait(10)
+    manager.cancel(job_id)                        # cancelling AND breaking
+    cam.gate.set()
+    job = manager.wait(job_id, timeout=30)
+    assert job.state == "failed"
+    assert "the disk is full" in job.error
+
+
+def test_a_burst_that_grabbed_nothing_fails_when_nobody_cancelled(tmp_path):
+    """Same exception, opposite verdict: with no cancel behind it, an empty
+    burst is a camera that delivered nothing, and the operator needs to be
+    told that rather than see a job quietly marked stopped."""
+    manager, _bus = _manager(tmp_path, camera=_SilentCamera(BURST))
+    job = manager.wait(manager.submit("capture", CFG), timeout=30)
+    assert job.state == "failed"
+    assert "No frames were grabbed" in job.error
+
+
+def test_a_second_camera_job_is_refused_while_one_owns_the_camera(tmp_path):
+    """Two bursts on one handle interleave stop/configure/start: job B's stop
+    makes job A's grab return None, and A is written out as a quietly
+    truncated stroke with a plausible, low peak speed. The Tk app refused
+    this; so does this one."""
+    cam = _GatedCamera(BURST)
+    manager, _bus = _manager(tmp_path, camera=cam)
+    job_id = manager.submit("piston_run", CFG)
+    assert cam.grabbing.wait(10)
+    with pytest.raises(RigBusy, match="camera"):
+        manager.submit("capture", CFG)
+    manager.cancel(job_id)
+    cam.gate.set()
+    manager.wait(job_id, timeout=30)
+    second = manager.submit("capture", CFG)       # the camera is free again
+    manager.wait(second, timeout=30)
+
+
+def test_re_analysis_is_not_blocked_by_a_running_capture(tmp_path):
+    """find/measure/video touch no camera, and re-measuring an existing folder
+    while the rig captures is a daily operation."""
+    folder = _frames_copy(tmp_path, "measured")
+    cam = _GatedCamera(BURST)
+    manager, _bus = _manager(tmp_path, camera=cam)
+    capture_id = manager.submit("piston_run", CFG)
+    assert cam.grabbing.wait(10)
+    video = manager.wait(manager.submit("video", {"measure_dir": str(folder)}),
+                         timeout=60)
+    assert video.state == "done"
+    manager.cancel(capture_id)
+    cam.gate.set()
+    manager.wait(capture_id, timeout=30)
+
+
+def test_the_persisted_row_matches_what_the_importer_would_read(tmp_path):
+    """The importer re-reads this same folder at every restart and upserts on
+    measure_dir, so a column filled there and left empty here makes the run
+    change the moment the service is restarted."""
+    measure_dir = tmp_path / "piston_2026-08-14-14-28-09_320x120_IN37-30U"
+    measure_dir.mkdir()
+    csv_path = measure_dir / f"{measure_dir.name}_speed.csv"
+    csv_path.write_text("unstable_frames,3\n", encoding="utf-8")
+    job = Job(id="j", kind="piston_run", params=dict(CFG, label="IN37 30U"))
+    record = jobs_module._record_from(
+        {"dest_dir": str(measure_dir), "csv_path": str(csv_path),
+         "barrel_mm": 6.0, "orifice_mm": 0.17, "fluid_density": 1000.0,
+         "measured_count": 120, "peak_speed_mm_s": 131.1}, job)
+    assert record.captured_at == "2026-08-14T14:28:09"     # not ""
+    assert record.roi == "320x120"
+    assert (record.barrel_mm, record.orifice_mm, record.density) == (
+        6.0, 0.17, 1000.0)
+    assert record.unstable_frames == 3
+    assert record.label == "IN37 30U"
+
+
+def test_a_standalone_measure_row_invents_no_roi(tmp_path):
+    """Re-analysis carries no capture settings, and an ROI built from two
+    missing params would store the literal "NonexNone" as fact."""
+    measure_dir = tmp_path / "hand-named-folder"
+    measure_dir.mkdir()
+    job = Job(id="j", kind="measure",
+              params={"injection_dir": "x", "captured_at": "2026-08-14T09:00:00"})
+    record = jobs_module._record_from({"dest_dir": str(measure_dir)}, job)
+    assert record.roi is None
+    assert record.captured_at == "2026-08-14T09:00:00"     # the caller's value
+    assert record.unstable_frames is None                  # no CSV to read
+
+
+def test_an_unreadable_csv_does_not_lose_the_finished_measurement(tmp_path):
+    """The measurement is already on disk; one unreadable column must not
+    throw away the row that describes it."""
+    measure_dir = tmp_path / "piston_2026-08-14-14-28-09_320x120"
+    measure_dir.mkdir()
+    job = Job(id="j", kind="piston_run", params=CFG)
+    record = jobs_module._record_from(
+        {"dest_dir": str(measure_dir),
+         "csv_path": str(measure_dir / "gone.csv")}, job)
+    assert record.unstable_frames is None
+    assert record.captured_at == "2026-08-14T14:28:09"
 
 
 def test_cancelling_an_unknown_job_returns_false(tmp_path):
@@ -221,18 +331,32 @@ class _CountingCamera(FakeCamera):
         super().close()
 
 
-class _GatedCamera(_CountingCamera):
-    """Holds the burst still inside grab() until the test releases it."""
+class _SilentCamera(FakeCamera):
+    """Opens and starts, then never delivers a frame."""
 
-    def __init__(self, *args, **kwargs):
+    def grab(self, timeout_ms):
+        return None
+
+
+class _GatedCamera(_CountingCamera):
+    """Holds the burst still inside grab() until the test releases it, and can
+    break on the way out (``save_error``) the way a full disk would."""
+
+    def __init__(self, *args, save_error=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.grabbing = threading.Event()
         self.gate = threading.Event()
+        self.save_error = save_error
 
     def grab(self, timeout_ms):
         self.grabbing.set()
         self.gate.wait(10)
         return super().grab(timeout_ms)
+
+    def save(self, frame, path):
+        if self.save_error is not None:
+            raise CameraError(self.save_error)
+        super().save(frame, path)
 
 
 def _drain(q):

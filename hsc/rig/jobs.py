@@ -21,7 +21,9 @@ from pathlib import Path
 
 from hsc import make_video, measure_piston, piston_track
 from hsc.hardware.device import CaptureConfig
+from hsc.rig import importer
 from hsc.rig.store import RunRecord
+from hsc.rig.worker import NoFramesGrabbed
 
 PIPELINE_PHASES = ("capture", "find", "measure", "video")
 
@@ -29,9 +31,24 @@ PIPELINE_PHASES = ("capture", "find", "measure", "video")
 PAD_BEFORE = 30
 PAD_AFTER = 30
 
+#: Job kinds that drive the camera. Only one may be active at a time: two
+#: bursts share one handle, so B's ``stop -> configure -> start`` makes A's
+#: ``grab`` return None mid-stroke, and A is written out as a quietly
+#: truncated run -- a shortened stroke with a plausible, low peak speed. The
+#: Tk app refused this outright; a lease does not cover it, because one holder
+#: can post two jobs.
+CAMERA_KINDS = frozenset({"capture", "piston_run"})
+
+#: A job that has not finished, and so may still own the camera.
+ACTIVE_STATES = frozenset({"queued", "running"})
+
 
 class JobCancelled(RuntimeError):
     """Raised inside a progress callback to unwind a cancelled job."""
+
+
+class RigBusy(RuntimeError):
+    """A camera job was submitted while another one still owns the camera."""
 
 
 @dataclass
@@ -74,6 +91,11 @@ class JobManager:
         job = Job(id=uuid.uuid4().hex, kind=kind, params=dict(params))
         thread = threading.Thread(target=self._run, args=(job,), daemon=True)
         with self._guard:
+            busy = self._camera_job() if kind in CAMERA_KINDS else None
+            if busy is not None:
+                raise RigBusy(
+                    f"the camera is busy with job {busy.id} ({busy.kind}); "
+                    "stop it before starting another")
             self._jobs[job.id] = job
             self._cancels[job.id] = threading.Event()
             self._threads[job.id] = thread
@@ -140,6 +162,13 @@ class JobManager:
                           phase=job.phase, progress=job.progress,
                           error=job.error, run_id=job.run_id)
 
+    def _camera_job(self):
+        """The unfinished job that owns the camera, if there is one. Call
+        under the guard."""
+        return next((job for job in self._jobs.values()
+                     if job.kind in CAMERA_KINDS and job.state in ACTIVE_STATES),
+                    None)
+
     def _cancelled(self, job):
         return self._cancels[job.id].is_set()
 
@@ -168,10 +197,13 @@ class JobManager:
             result = self._worker.capture_piston(
                 self._config(job), float(job.params.get("duration_s", 4.0)),
                 label=job.params.get("label", ""), cancel=stopped)
-        except Exception:
-            # A burst stopped before its first frame raises ("No frames were
-            # grabbed") -- true of the camera, wrong about the job. The
-            # operator cancelled it; report cancelled, not failed.
+        except NoFramesGrabbed:
+            # The ONE burst failure a cancel may forgive: stopped before the
+            # first frame is what the operator asked for. Anything else --
+            # including a write that broke in the save loop, which runs after
+            # the cancel flag is already set -- stays a failure, or the
+            # operator is told "cancelled" about frames that never reached the
+            # disk. See worker.NoFramesGrabbed.
             if stopped():
                 raise JobCancelled() from None
             raise
@@ -238,22 +270,67 @@ _RUNNERS = {
 
 
 def _record_from(result, job):
+    """The database row for a finished measurement.
+
+    Written to match what :mod:`hsc.rig.importer` reads back out of the same
+    folder at the next restart -- it upserts on ``measure_dir``, so any column
+    it fills and this one leaves empty makes the run change on restart.
+    """
+    name = Path(result["dest_dir"]).name
+    _kind, folder_stamp, folder_roi, _label = importer.parse_folder_name(name)
     return RunRecord(
         kind="piston",
-        captured_at=str(job.params.get("captured_at", "")),
+        # The run folder carries the capture's timestamp, and it is what the
+        # importer will read. An empty string here would sort the run the
+        # operator just made to the bottom of a `captured_at DESC` list.
+        captured_at=folder_stamp or str(job.params.get("captured_at", "")),
         measure_dir=result["dest_dir"],
         label=job.params.get("label") or None,
         source_dir=job.result.get("output_dir"),
         injection_dir=job.result.get("injection_dir"),
-        roi=f"{job.params.get('width')}x{job.params.get('height')}",
+        roi=_roi(job.params, folder_roi),
         fps=result.get("fps"), timebase=result.get("timebase"),
         exposure_us=job.params.get("exposure_us"),
         mm_per_px=result.get("mm_per_px"),
         scale_source=result.get("scale_source"),
+        barrel_mm=result.get("barrel_mm"), orifice_mm=result.get("orifice_mm"),
+        density=result.get("fluid_density"),
         stroke_px=result.get("stroke_px"), stroke_mm=result.get("stroke_mm"),
         duration_ms=result.get("duration_ms"),
         mean_speed_mm_s=result.get("mean_speed_mm_s"),
         peak_speed_mm_s=result.get("peak_speed_mm_s"),
         peak_jet_speed_m_s=result.get("peak_jet_speed_m_s"),
         peak_jet_pressure_MPa=result.get("peak_jet_pressure_MPa"),
+        unstable_frames=_unstable_frames(result),
         measured_count=result.get("measured_count"))
+
+
+def _roi(params, folder_roi):
+    """The capture ROI, or ``None`` -- never a string built out of blanks.
+
+    A standalone ``measure`` job carries no capture settings, and
+    ``f"{None}x{None}"`` would store the literal ``"NonexNone"`` for the runs
+    list to show as fact.
+    """
+    width, height = params.get("width"), params.get("height")
+    if width and height:
+        return f"{width}x{height}"
+    return folder_roi
+
+
+def _unstable_frames(result):
+    """The one column ``measure_folder`` writes but does not return.
+
+    Read from the CSV summary block exactly as the importer reads it, so the
+    row does not gain the number at the next restart. Unreadable ⇒ ``None``:
+    the measurement is already on disk, and one missing column must not throw
+    away the row that describes it.
+    """
+    csv_path = result.get("csv_path")
+    if not csv_path:
+        return None
+    try:
+        raw = importer._raw_summary_values(Path(csv_path), {"unstable_frames"})
+    except OSError:
+        return None
+    return importer._to_int(raw.get("unstable_frames"))

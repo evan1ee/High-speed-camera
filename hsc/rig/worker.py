@@ -35,6 +35,17 @@ class WrongFrameSize(RuntimeError):
     """The camera streamed a size other than the one programmed."""
 
 
+class NoFramesGrabbed(RuntimeError):
+    """The burst ended without a single frame.
+
+    Its own type because it is the one burst failure a CANCELLED job may
+    forgive -- stopping before the first frame is what the operator asked for.
+    Every other failure in the burst must stay a failure even while the cancel
+    flag is set: the frames are saved AFTER the grab loop ends, so a write that
+    breaks there would otherwise be reported as a clean stop.
+    """
+
+
 @dataclass(frozen=True)
 class BurstResult:
     output_dir: Path
@@ -191,7 +202,7 @@ class CameraWorker:
     @staticmethod
     def _require_frames(clones):
         if not clones:
-            raise RuntimeError(
+            raise NoFramesGrabbed(
                 "No frames were grabbed - check the camera and lighting.")
 
 
