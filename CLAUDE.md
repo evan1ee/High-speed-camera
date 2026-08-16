@@ -316,6 +316,24 @@ distance/speed-vs-time record of the stroke.
   stored in `reference_lines.json` (`settings\` at the repo root) and overlaid on every measured frame by
   `measure_folder` when the frame size matches. (`detect_tip_in_roi` /
   `set_reference_from_image/_folder` = auto-detect helpers, kept for CLI.) `NOZZLE_SIDE` = right.
+- **`hsc/hardware/`** — the seam between rig code and the vendor SDK.
+  `device.py` is the protocol; `imv.py` is the real adapter and the ONLY file
+  excluded from coverage — a test parses it and fails if it grows any logic;
+  `fake.py` replays a saved burst and is what every test above the seam runs
+  against, including faults (dropped frames, wrong ROI) that used to be
+  reproducible only on the rig.
+- **`hsc/rig/`** — the service: one camera worker, piston pipeline jobs with
+  phases and cancellation, the single-controller lease, the event bus and the
+  SQLite store. Imports no web framework (asserted by `tests/test_layering.py`)
+  so the whole pipeline is testable without a server.
+- **`hsc/api/`** — FastAPI over `hsc/rig/`: REST, `/ws/events` (JSON) and
+  `/ws/preview` (binary JPEG), and the `RuntimeError` -> error-code mapping
+  that lets the UI show the lighting numbers next to a failed capture.
+  Run with `uv run python -m hsc.api --host <tailscale-ip>` (`__main__.py`:
+  `--host`, `--port`, `--data-root`, `--spa <built frontend dir>`, `--cors
+  <origin>` repeatable; `build()` is the wiring, split out so it is covered).
+  There is no application-level authentication — the tailnet is the security
+  boundary.
 - **`hsc/app_paths.py`** — `resource_root()` (bundled read-only files: SDK, `Runtime` DLLs,
   `bin/injection_scan.exe`) returns `vendor/`: `<root>/vendor` from source,
   `<sys._MEIPASS>/vendor` when frozen (PyInstaller). `data_root()` (user output:
@@ -355,6 +373,10 @@ All user output lives under `data\` (gitignored), via `data_root()`:
   writes `piston_speed.csv` + `distance_time.png` + `speed_time.png` here instead.
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
+- `data\rig.db` — the service's SQLite run index (`hsc/rig/store.py`), created by
+  `hsc.api.__main__.build()` under `--data-root` and filled from `data\measure\` on
+  startup by `hsc.rig.importer`. It is an index of folders that already exist, so
+  deleting it loses nothing a restart cannot rebuild.
 
 **Run label.** The optional "Run label" field (Capture Settings, `run_label_var`) is appended to
 every run folder — `<timestamp>_<aspect>_<label>`, `piston_…_<label>`, `monitor_…_<label>` — and
@@ -489,12 +511,28 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (175 tests: import smoke, GUI wiring/dispatch, monitor
+- Tests: `uv run python -m pytest` (440 tests: import smoke, GUI wiring/dispatch, monitor
   engine/replay/wiring, frame writer, BMP row order, smart save, synthetic wedge,
   edge-detection V2 (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed /
   GUI wiring (synthetic strokes with exact ground truth), calibration load, vendor layout,
-  data root). Compile check:
-  `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.
+  data root, plus the service layers: hardware seam / fake camera, rig store, importer,
+  lease, events, worker, jobs, the API routes and both WebSockets, and the layering
+  guard). No camera and no server are needed — nothing binds a port. Compile check:
+  `uv run python -m py_compile hsc/*.py hsc/gui/*.py hsc/hardware/*.py hsc/rig/*.py hsc/api/*.py benchmark/*.py run_gui.py`.
+- **Coverage gate** for the service layers (run it before merging anything under
+  `hsc/hardware/`, `hsc/rig/`, `hsc/api/`):
+  ```powershell
+  uv run python -m pytest --cov=hsc.hardware --cov=hsc.rig --cov=hsc.api --cov-report=term-missing --cov-fail-under=100
+  ```
+  100% is required. The single documented omission is `hsc/hardware/imv.py`
+  (`[tool.coverage.run] omit` in `pyproject.toml`), which cannot run without a camera —
+  and that exclusion is only honest because `tests/hardware/test_imv_has_no_logic.py`
+  parses the file and fails if it grows any branching or computation. Fix an uncovered
+  line by adding the test, never by widening the omit list. `tests/test_layering.py`
+  is the other half: it parses every `hsc/rig/` module's imports and fails on
+  fastapi/starlette/uvicorn/`hsc.api`, and checks the analysis modules never import the
+  layers above them. `test_erf_mode_meets_perf_budget` skips itself under `--cov`
+  (tracing inflates wall clock — a timing assertion must not make the gate flaky).
 - Edge-detection accuracy: `uv run python -m benchmark.run_benchmark <tag>` writes
   `benchmark/results/<tag>.csv` (synthetic wedges with exact ground truth); compare against
   the committed `benchmark/baseline.csv` (legacy scores). Flip flags via

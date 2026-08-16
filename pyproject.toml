@@ -29,6 +29,13 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # fastapi.testclient warns on import that httpx will be replaced by
+    # httpx2. httpx is this project's authorised dependency, so the warning is
+    # noise -- and noise is what hides a warning that matters. Silenced here
+    # rather than by swapping the dependency.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+]
 
 [tool.coverage.run]
 source = ["hsc/hardware", "hsc/rig", "hsc/api"]
