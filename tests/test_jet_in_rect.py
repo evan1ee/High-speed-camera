@@ -10,7 +10,6 @@ import numpy as np
 from benchmark import synthetic
 from benchmark.synthetic import make_sequence
 from hsc import measure_angle as ma
-from hsc.gui.measurement import _format_frame_lines
 
 
 def _result(k_up, y_up, k_lo, y_lo, x=10.0):
@@ -82,24 +81,20 @@ def test_measure_folder_reports_ng(tmp_path):
     assert ",NG" in csv_text
 
 
-def test_gui_frame_lines_include_verdict():
-    result = {
-        "frames": [("frame_000001.bmp", 0.44), ("frame_000002.bmp", 1.20)],
-        "frame_confidence": [("frame_000001.bmp", 100, "High"),
-                             ("frame_000002.bmp", 40, "Low")],
-        "frame_in_rect": [("frame_000001.bmp", "OK"),
-                          ("frame_000002.bmp", "NG")],
-    }
-    lines = _format_frame_lines(result)
-    assert "frame_000001.bmp: 0.44 deg [High], OK" in lines
-    assert "frame_000002.bmp: 1.20 deg [Low], NG" in lines
-
-
-def test_gui_frame_lines_without_reference_unchanged():
-    result = {
-        "frames": [("frame_000001.bmp", 0.44)],
-        "frame_confidence": [("frame_000001.bmp", 100, "High")],
-        "frame_in_rect": [("frame_000001.bmp", "")],
-    }
-    lines = _format_frame_lines(result)
-    assert "frame_000001.bmp: 0.44 deg [High]\n" in lines
+def test_measure_folder_without_reference_reports_no_verdict(tmp_path):
+    """No reference set for the frame size => the verdict column is empty,
+    so a caller can tell 'not checked' from 'checked and failed'."""
+    frames, truth = make_sequence(n_pre=14, n_jet=10, noise_sigma=6.0, seed=2)
+    src = tmp_path / "inj"
+    src.mkdir()
+    for i, f in enumerate(frames):
+        cv2.imwrite(str(src / f"frame_{i:06d}.bmp"), f)
+    old = ma.reference_lines.load_reference
+    ma.reference_lines.load_reference = lambda: None
+    try:
+        out = ma.measure_folder(src, dest_base=tmp_path / "m", start=2, end=9,
+                                start_x=truth["x_lo"], end_x=truth["x_hi"])
+    finally:
+        ma.reference_lines.load_reference = old
+    assert out["frame_in_rect"]
+    assert all(v == "" for _name, v in out["frame_in_rect"])

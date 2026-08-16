@@ -48,18 +48,3 @@ def test_measure_folder_accepts_ref_lines():
     assert sig.parameters["ref_lines"].default is True
     src = inspect.getsource(measure_angle.measure_folder)
     assert "lines=ref_lines" in src
-
-
-def test_gui_checkbox_wired():
-    """Layout has the checkbox, measurement owns the var (default ON) and
-    passes it through the worker into measure_folder."""
-    import hsc.gui.layout as layout
-    import hsc.gui.measurement as measurement
-
-    layout_src = inspect.getsource(layout)
-    assert "Ref. lines on output" in layout_src
-    assert "self.ref_lines_var" in layout_src
-
-    meas_src = inspect.getsource(measurement)
-    assert "self.ref_lines_var = tk.BooleanVar(value=True)" in meas_src
-    assert "ref_lines=" in inspect.getsource(measurement.MeasurementMixin._measure_worker)

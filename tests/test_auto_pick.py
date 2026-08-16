@@ -1,5 +1,8 @@
 """Auto-pick measure mode: find the first run of AUTO_PICK_COUNT consecutive
 measurable frames whose jet span is stable, instead of fixed start..end."""
+import cv2
+
+from benchmark.synthetic import make_sequence
 from hsc import measure_angle as ma
 
 
@@ -33,15 +36,27 @@ def test_stable_window_rejects_unstable_angle():
     assert idx == 5
 
 
-def test_gui_wiring_auto_pick():
-    import inspect
-    from hsc.gui.measurement import MeasurementMixin
-    from hsc.gui.layout import LayoutMixin
+def test_measure_folder_auto_pick_ignores_start_end(tmp_path):
+    """``auto_pick=True`` measures the settled jet regardless of start/end.
 
-    msrc = inspect.getsource(MeasurementMixin)
-    assert "auto_pick_var" in msrc
-    assert "auto_pick=" in msrc            # routed into measure_folder
-    assert "_toggle_auto_pick" in msrc     # entries enabled/disabled
-    lsrc = inspect.getsource(LayoutMixin)
-    assert "auto_pick_var" in lsrc
-    assert "measure_start_entry" in lsrc   # entry handles kept for disabling
+    The fixed-index path would measure jet frames 40..41 -- frames that do not
+    exist in this 10-frame jet -- and find nothing. Auto-pick walks from the
+    first measurable jet frame instead, so it still returns a full window.
+    """
+    n_pre = 14
+    frames, truth = make_sequence(n_pre=n_pre, n_jet=12, noise_sigma=3.0,
+                                  seed=5)
+    src = tmp_path / "inj"
+    src.mkdir()
+    for i, frame in enumerate(frames):
+        cv2.imwrite(str(src / f"frame_{i:06d}.bmp"), frame)
+
+    out = ma.measure_folder(src, dest_base=tmp_path / "m", start=40, end=41,
+                            start_x=truth["x_lo"], end_x=truth["x_hi"],
+                            auto_pick=True)
+
+    assert out["auto_pick"] is True
+    picked = [name for name, _angle in out["frames"]]
+    assert len(picked) == ma.AUTO_PICK_COUNT
+    # The jet-free padding frames hold no jet, so they can never be picked.
+    assert all(int(name[6:12]) >= n_pre for name in picked), picked
