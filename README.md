@@ -4,12 +4,18 @@ Capture a high-pressure water-jet injection with a high-speed camera, automatica
 isolate the ~200–300 frames that contain the injection out of the thousands recorded,
 and measure the spray (jet) angle on the frames that matter.
 
-The whole flow runs from a single **Capture** click in the GUI:
+The flow is three stages:
 
 ```
 Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
  data\captures\…      data\injection images\…   data\measure\…
 ```
+
+> **The Tkinter desktop app was retired on 2026-08-17.** The rig is now driven by the
+> **HTTP/WebSocket service** (`uv run python -m hsc.api`) and by the module CLIs below.
+> The service chains the **piston-speed** pipeline end to end; the spray-angle pipeline runs
+> from its CLIs. Live preview, Monitor mode and the interactive calibration/reference dialogs
+> have no driver until the React UI lands — git history holds the dialogs for that port.
 
 ---
 
@@ -17,16 +23,17 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 
 | File | Purpose |
 |------|---------|
-| `run_gui.py` | **Entry point** — launches the GUI (`uv run python run_gui.py`); also the PyInstaller entry. |
-| `hsc/gui/` | **Main app.** Tkinter GUI package (one module per feature): live preview, instant capture, auto find-injection, auto measure. `hsc/capture_gui.py` is a compatibility shim. |
+| `hsc/api/` | **Entry point** — the rig service (`uv run python -m hsc.api --host <ip>`): REST, `/ws/events`, `/ws/preview`. |
+| `hsc/rig/` | The service core: camera worker, pipeline jobs, control lease, event bus, SQLite run store. No web framework. |
+| `hsc/hardware/` | The camera seam: protocol, real IMV adapter, and a fake camera that replays a saved burst. |
 | `hsc/capture_image.py` | Low-level camera capture (IMV SDK). Also a standalone CLI. |
 | `hsc/injection_extract.py` | Finds the injection event in a long burst and copies the relevant frames out. |
 | `native/injection_scan.cpp` / `vendor/bin/injection_scan.exe` | Fast C++/OpenMP motion scanner used by `injection_extract` (optional; Python fallback exists). |
 | `native/build_injection_scan.bat` | Rebuilds `injection_scan.exe` into `vendor\bin\` (MinGW g++). |
 | `hsc/measure_angle.py` | Spray-angle measurement pipeline (Otsu → edges → RANSAC → angle). Also a CLI. |
 | `hsc/measure_block.py` | Measures the angle of a reference **angle block** from a single still (same edge/RANSAC core). Also a CLI. |
+| `hsc/piston_track.py`, `hsc/measure_piston.py` | Piston edge tracking and the distance/speed record of the stroke. Also CLIs. |
 | `vendor/Development/`, `vendor/Runtime/` | The camera vendor's IMV SDK (Python wrapper) and runtime DLLs. |
-| `packaging/` | PyInstaller spec + `build_exe.bat` for the standalone Windows app. |
 | `data\captures\` | Raw burst output (one timestamped folder per run). |
 | `data\injection images\` | Extracted injection windows (one folder per run). |
 | `data\measure\` | Annotated angle-measurement images + `angles.csv`. |
@@ -37,7 +44,8 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 
 - **Windows** (the camera SDK and `os.startfile` are Windows-specific).
 - **[uv](https://docs.astral.sh/uv/)** — manages Python 3.13 and all dependencies
-  (numpy, opencv-python, scipy, scikit-learn, pillow; dev group adds pytest + PyInstaller).
+  (numpy, opencv-python, scipy, scikit-learn, pillow, fastapi, uvicorn; dev group adds
+  pytest and friends).
   One-time setup from the repo root:
   ```
   uv sync
@@ -50,46 +58,51 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 
 ---
 
-## Quick start (GUI)
+## Quick start — the rig service
 
 ```bash
-uv run python run_gui.py
+uv run python -m hsc.api --host 100.x.y.z --port 8000
 ```
 
-1. The window opens maximized and the **live preview** starts automatically.
-2. Set the capture parameters (defaults shown):
-   - **Capture time** `4.0` s, **Aspect preset** `320x240`, **Exposure** `500` µs, **Camera index** `1`.
-   - **Frames before / after injection** `30 / 30` (padding kept around the detected event).
-   - **Measure from / to (Nth)** `10 / 20` (which jet frames to measure — see below).
-3. Click **Capture**, then fire the injector. When capture finishes it **auto-detects the
-   injection** and **auto-measures** the spray angle.
-4. Results land in `data\injection images\<run>\` and `data\measure\<run>\`. Use **Open Last Folder**.
+Bind to the **Tailscale address** on the rig. There is no application-level authentication:
+the tailnet is the security boundary, so anyone on it can fire the injector. Flags:
+`--data-root` (where `captures\`, `injection images\`, `measure\` and `rig.db` live),
+`--spa <built frontend dir>`, `--cors <origin>` (repeatable, for frontend development).
 
-Buttons: **Stop Preview**, **Capture**, **Stop** (abort), **Start Monitoring** (continuous
-auto-capture — see *Monitor mode* below), **Find Injection** (re-run on any folder),
-**Measure** (pick a folder to measure), **Open Last Folder**.
+A client takes the **control lease**, posts a piston-capture job, and follows it on
+`/ws/events`; the service runs **capture → find stroke → measure piston → video** and records
+the run in SQLite. Runs, their CSVs and their media are served back over REST.
 
-**Smart save** (checkbox, default **off**): detect the injection in RAM *before* saving and
-write only the `before..after` window straight to `data\injection images\<run>\` (plus an
-`injection_meta.json`), skipping the full-burst write to `data\captures\`. If no injection is
-detected the full burst is saved to `data\captures\<run>\` as usual (unchanged legacy path).
-This shortens the post-capture wait by not writing thousands of frames just to copy a few
-hundred back out. Validate the decision on your own recorded bursts before enabling:
+## Quick start — analysis from the command line
+
+Measurement needs no camera and no server:
+
+```bash
+uv run python -m hsc.capture_image --duration 4 --aspect 320x240 --exposure-us 500
+uv run python -m hsc.injection_extract "data\captures\<run>" --before 30 --after 30
+uv run python -m hsc.measure_angle "data\injection images\<run>" --start 10 --end 20
+```
+
+**Smart save** (`hsc/smart_save.py`) is the *detect-before-write* capture path: detect the
+injection in RAM *before* saving and write only the `before..after` window straight to
+`data\injection images\<run>\` (plus an `injection_meta.json`), skipping the full-burst write
+to `data\captures\`. It has **no live driver today** — the service writes the full burst — but
+its decision can still be validated against recorded bursts:
 `uv run python -m hsc.smart_save "data\captures\<run>" --compare` should report `IDENTICAL`
-(the same window the legacy extractor picks).
+(the same window the offline extractor picks).
 
 ## Monitor mode (continuous multi-injection capture)
 
-Click **Start Monitoring** and the camera streams continuously: every injection is detected
-**online** (`hsc/monitor.py`), saved by a background writer to its own
-`data\injection images\monitor_<stamp>_<WxH>\` folder (with `injection_meta.json`; nothing is
-written to `data\captures\`), and then **auto-measured** — one event at a time, in order, even
-if you fire the next injection while the previous one is still processing. No slow-motion
-video is made in monitor mode (use the Make Video button on a folder if you want one). A
-typical saved event is ~150–300 frames (`before` + jet + `after`). Click **Stop Monitoring**
-to finish; an event in progress at that moment is closed, saved, and processed like any other.
-While monitoring, the camera-owning buttons (Capture, Calibrate Scale, Auto Calibrate, Measure
-Block, Measure Angle Block, Set Reference) are disabled; the live preview stays on.
+**No driver today** — monitoring was started from the retired GUI, and nothing restarts a
+session until the web UI grows one. The detector itself (`hsc/monitor.py`) is kept, tested and
+still replayable from the CLI, because its thresholds were calibrated on the rig.
+
+When driven, the camera streams continuously: every injection is detected **online**, saved by
+a background writer to its own `data\injection images\monitor_<stamp>_<WxH>\` folder (with
+`injection_meta.json`; nothing is written to `data\captures\`), and then measured — one event
+at a time, in order, even if the next injection is fired while the previous one is still
+processing. A typical saved event is ~150–300 frames (`before` + jet + `after`). Stopping
+closes, saves and processes any event in progress.
 
 How detection works (calibrated on-rig 2026-07-10): an event **triggers** when one frame
 changes > `MON_TRIGGER` (300) pixels; it **ends** when the changed-pixel count stays quiet
@@ -146,15 +159,15 @@ RANSAC line fitting → spray-angle = |atan(k_upper) − atan(k_lower)|
 (pre-injection padding is skipped), so the default `10–20` measures the steady jet and skips
 the violent initial burst.
 
-**Edge detection V2 (opt-in A/B):** the **Edge detection V2** checkbox measures with a
-benchmark-gated upgrade — a per-side blurred-step (erf) edge model, a pre-onset background
+**Edge detection V2 (opt-in A/B):** wrapping a measure run in `measure_angle.edge_v2()` applies
+a benchmark-gated upgrade — a per-side blurred-step (erf) edge model, a pre-onset background
 built only from the jet-free padding frames, and a trusted-edge angle policy. Off (default)
 = the unchanged legacy pipeline; measure the same folder twice to compare. `angles.csv`
 also gains per-edge quality columns (`q_up,q_lo,policy`) and a `pooled_angle` summary row
 (one fit over all measured frames' edge samples).
 
 ### 4. Measure an angle block (`hsc/measure_block.py`)
-The **Measure Angle Block** button captures a single still of a reference block placed under
+Takes a single still of a reference block placed under
 the camera and measures the angle between its two straight edges — a calibration/validation of
 the same edge-finding used for the jet. Result images and `block_angles.csv` go to
 `data\measure\angle_block\`.
@@ -167,26 +180,31 @@ distance as the jet**. Calibration uses an **ROI (region-of-interest) workflow**
 each edge and the software finds it to sub-pixel precision (robust against reflections and
 the nozzle in the background):
 
-**Auto (one click):** click **Auto Calibrate** — the GUI grabs a still (saved to `data\measure\block\`),
-auto-detects the two dark lines in the **left third** of the image (which avoids the nozzle /
-reflection clutter on the right), fits the two green lines, saves the calibration, and opens the
-annotated check image. Just confirm the green lines land on the outer edge of each dark line.
+**Auto:** `auto_calibrate_image` (`auto_rois`) auto-detects the two block edges in the
+**left third** of a still — which avoids the nozzle / reflection clutter on the right — fits
+the two green lines, and saves the calibration plus an annotated check image to
+`data\measure\block\`. Confirm the green lines land on the correct edge of each line.
 
-**Manual (draw ROIs):** if the auto detection picks the wrong lines, use **Calibrate Scale**:
+**Manual:** if auto-detection picks the wrong lines, pass the two ROIs explicitly:
 
-1. Enter the edge-to-edge distance in **Cal. distance (mm)** and click **Calibrate Scale** —
-   the GUI grabs a still and opens the calibration window.
-2. Drag a box (ROI) around the **upper edge**, then a box around the **lower edge**.
-3. Click **Detect Edge**. A green line is fitted inside each ROI; the window shows the
-   **pixel distance** and **mm/pixel**. If a green line is off, redraw that ROI and detect again.
-4. Click **Save Calibration** — writes `calibration.json` and a `*_scale.bmp` check image.
+```bash
+uv run python -m hsc.calibrate_scale still.bmp --ref-mm 5 \
+    --roi1 x0 y0 x1 y1 --roi2 x0 y0 x1 y1
+```
 
-**Measuring another block** (after calibrating): replace the reference with an unknown block and
-click **Measure Block** — it detects the two edges the same way and reports the block's size in
-**mm** using the stored calibration, *without* changing it (writes a `*_measured.bmp` overlay).
-Note: **Auto Calibrate / Calibrate Scale always save a new calibration** (they assume the block is
-the entered distance), so to measure an unknown block you must calibrate on the **known reference
-first**, then use **Measure Block** — don't click Calibrate on the unknown block.
+A green line is fitted inside each ROI, and the **pixel distance** and **mm/pixel** are
+reported and written to `calibration.json` with a `*_scale.bmp` check image. If a green line
+is off, adjust that ROI and re-run.
+
+> The interactive dialog that let you drag the ROIs on screen went with the Tk app; it is in
+> git history and returns with the React UI.
+
+**Measuring another block** (after calibrating): replace the reference with an unknown block
+and use `measure_block_size` — it detects the two edges the same way and reports the block's
+size in **mm** using the stored calibration, *without* changing it (writes a `*_measured.bmp`
+overlay). Note: **calibration always saves a new `calibration.json`** (it assumes the block is
+the entered distance), so to measure an unknown block, calibrate on the **known reference
+first**, then measure — never calibrate on the unknown block.
 
 Inside each ROI: `Gaussian blur → per-scanline sub-pixel edge → TLS line fit`. Because a
 chamfered block edge appears as a **dark line** (the chamfer reflects light away from the
@@ -287,21 +305,29 @@ uv run python -m hsc.measure_block "data\measure\angle_block\block_<timestamp>.b
 uv run python -m pytest
 ```
 
-17+ tests: module imports, the measurement pipeline on a synthetic wedge,
-injection-bounds detection + copy-window clamping, and equivalence of the three
-motion-signal back-ends (C++ / NumPy raw-BMP / PIL). Measurement tests need no
-camera. Tests that depend on rig data (`data/` is git-ignored) skip cleanly when
-it is absent.
+395 tests: module imports, the measurement pipeline on a synthetic wedge,
+injection-bounds detection + copy-window clamping, equivalence of the three
+motion-signal back-ends (C++ / NumPy raw-BMP / PIL), piston tracking and speed against
+synthetic strokes with exact ground truth, and the whole service layer (fake camera, store,
+jobs, REST routes, both WebSockets, layering guard). No camera and no server are needed —
+nothing binds a port. The service layers are additionally held at **100% coverage**:
+
+```bash
+uv run python -m pytest --cov=hsc.hardware --cov=hsc.rig --cov=hsc.api --cov-fail-under=100
+```
+
+Tests that depend on rig data (`data/` is git-ignored) skip cleanly when it is absent.
 
 ---
 
 ## Recovery
 
-- **Reset calibration / reference:** delete `data\calibration.json` or
-  `data\reference_lines.json` to clear a bad calibration or nozzle reference, then
-  re-run **Auto Calibrate** / **Set Reference**. After any re-save a `.bak` of the
+- **Reset calibration / reference:** delete `settings\calibration.json` or
+  `settings\reference_lines.json` to clear a bad calibration or nozzle reference, then
+  re-run the calibration CLI / `set_reference_from_image`. After any re-save a `.bak` of the
   previous version sits next to each file (writes are atomic, so a crash mid-save
   can't corrupt them).
-- **Logs:** GUI activity is appended to `data\app.log` (next to the .exe in the
-  frozen build). The headless `--selftest` writes its outcome to `selftest.log`
-  next to the .exe.
+- **Logs:** the service logs to its console (uvicorn); each run's numbers live in its
+  `data\measure\<run>\` folder and in `rig.db`.
+- **Packaging:** the frozen one-folder Windows build was retired with the GUI it packaged.
+  See `docs/DISTRIBUTION.md` for running from source until the web build replaces it.

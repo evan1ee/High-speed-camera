@@ -68,9 +68,15 @@ def test_the_guard_has_modules_to_guard():
     """An empty glob would make every parametrised case below vanish
     silently, leaving a green guard that guards nothing."""
     assert RIG_MODULES and ANALYSIS_MODULES
-    # The analysis sweep must reach the packages below hsc/, not just its top
-    # level -- hsc/gui/ is the largest consumer surface in the repo.
-    assert any(p.parent != ANALYSIS for p in ANALYSIS_MODULES)
+    # The sweep is recursive, so an analysis package added under hsc/ later is
+    # guarded without touching this file. Only the three service packages are
+    # exempt, and only because they answer to the rule above instead.
+    # (hsc/gui/ used to be the proof that recursion works; it was deleted with
+    # the Tk app, leaving every analysis module at the top level today.)
+    assert not any(pkg in p.parents
+                   for p in ANALYSIS_MODULES for pkg in SERVICE_PACKAGES)
+    assert {p.name for p in ANALYSIS_MODULES} >= {
+        "measure_angle.py", "piston_track.py", "measure_piston.py"}
 
 
 @pytest.mark.parametrize("path", RIG_MODULES, ids=_module_id)
@@ -111,7 +117,7 @@ def test_a_submodule_import_is_caught(tmp_path, source, forbidden, expected):
 
 @pytest.mark.parametrize("source", [
     "from hsc import measure_piston",
-    "from hsc.gui.config import data_root",
+    "from hsc.app_paths import data_root",
     "import hsc.apiary",              # a prefix match must respect the dot
     "from hsc.rigging import thing",
 ])

@@ -14,9 +14,10 @@ dependencies = [
 ]
 
 [dependency-groups]
+# PyInstaller was dropped with the Tk app: its spec's entry point (run_gui.py)
+# is gone, and the frozen build returns when there is a web build to bundle.
 dev = [
     "pytest>=9.0",
-    "pyinstaller>=6.21",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
     "httpx>=0.28.1",

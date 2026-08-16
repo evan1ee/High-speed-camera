@@ -3,7 +3,8 @@
 
 """The single camera thread's work, independent of any UI.
 
-Ported from ``hsc/gui/camera_worker.py``. Three behaviours here were each
+Ported from ``hsc/gui/camera_worker.py`` (deleted 2026-08-17 with the Tk app;
+see git history). Three behaviours here were each
 learned from a failed rig run and are now covered for the first time:
 
 * the camera is REPROGRAMMED before the burst -- otherwise it keeps the frame

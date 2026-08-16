@@ -1,78 +1,57 @@
-# Building & Transferring the App (Windows .exe)
+# Running the rig, and shipping it to another PC
 
-The GUI can be packaged into a standalone Windows folder app with
-[PyInstaller](https://pyinstaller.org/) so it runs on another PC **without
-installing Python or any packages**.
+The frozen one-folder Windows app (`dist\HighSpeedCamera\HighSpeedCamera.exe`,
+built by `packaging\HighSpeedCamera.spec`) packaged the **Tkinter GUI**, which
+was retired on 2026-08-17. Its entry point (`run_gui.py`) no longer exists, so
+the spec and `packaging\build_exe.bat` were removed with it. Git history holds
+both, and they are the starting point for the next frozen build — which returns
+when the React UI exists and there is a web build to bundle beside the service.
 
-## Build
+Until then the rig runs **from the source checkout**.
 
-One time, on the development PC (installs Python 3.13 + all deps including
-PyInstaller into `.venv\`, pinned by `uv.lock`):
+## Run the rig service
+
+One time, on the rig PC (installs Python 3.13 + all dependencies into `.venv\`,
+pinned by `uv.lock`):
 
 ```
 uv sync
 ```
 
-Then build (works from anywhere — the script switches to the repo root itself):
+Then:
 
 ```
-packaging\build_exe.bat
+uv run python -m hsc.api --host 100.x.y.z --port 8000
 ```
 
-or directly, from the repo root:
+Bind to the **Tailscale address** in production. There is no application-level
+authentication: the tailnet is the security boundary, so anyone on it can fire
+the injector. `--data-root` overrides where `captures\`, `injection images\`,
+`measure\` and `rig.db` live (default: `data\` in the checkout); `--spa` serves
+a built frontend directory once one exists; `--cors` whitelists a browser
+origin during frontend development.
+
+## Analysis without a camera
+
+Measurement needs no SDK and no camera — pure OpenCV/SciPy/scikit-learn on
+saved frames — so any PC with the checkout can re-measure an archived run:
 
 ```
-uv run python -m PyInstaller packaging\HighSpeedCamera.spec --noconfirm --clean
+uv run python -m hsc.piston_track "data\captures\<run>"
+uv run python -m hsc.measure_piston "data\injection images\<run>"
+uv run python -m hsc.measure_angle "data\injection images\<run>"
+uv run python -m hsc.summary "data\measure\<run>" ...
 ```
 
-Output: **`dist\HighSpeedCamera\`** containing `HighSpeedCamera.exe` and an
-`_internal\` folder (Python runtime, OpenCV/SciPy/scikit-learn, and the bundled
-`vendor\` tree — camera SDK wrapper, `Runtime\x64` camera DLLs, and
-`bin\injection_scan.exe` — under `_internal\vendor\...`). ~480 MB
-uncompressed, ~150–200 MB zipped.
+## What the rig PC needs
 
-## Transfer
-
-1. **Zip the whole `dist\HighSpeedCamera` folder** (not just the .exe — the
-   `_internal` folder must travel with it).
-2. Copy the zip to the other PC and unzip it anywhere.
-3. Run `HighSpeedCamera.exe`.
-
-Captures, `injection images`, and `measure` output are written **next to the
-.exe** (unchanged from earlier builds — already-deployed rigs keep their data
-where it is), so keep it in a folder the user can write to (not
-`C:\Program Files`).
-
-## What the target PC needs
-
-- **Nothing for measurement / video** — the packaged app is self-contained.
-  `HighSpeedCamera.exe --selftest "<an injection images folder>"` runs the
-  measure + video pipeline with no camera and writes the result to
-  `selftest.log` next to the exe (use it to confirm a fresh copy works).
 - **For live capture** — the physical high-speed camera plus its USB3 Vision /
-  vendor driver installed on that PC. The app bundles the SDK **runtime DLLs**,
-  but the OS-level camera driver is installed by the camera vendor's installer.
+  vendor driver. The checkout carries the SDK **runtime DLLs** under `vendor\`
+  (`hsc.app_paths.resource_root()`), but the OS-level camera driver comes from
+  the camera vendor's own installer.
+- **For measurement / video** — nothing beyond `uv sync`.
 
-## Verify a build
-
-```
-HighSpeedCamera.exe --selftest "D:\path\to\injection images\<run>"
-```
-
-`selftest.log` should end with `SELFTEST PASSED`.
-
-After the selftest, also **double-click `HighSpeedCamera.exe` once** and confirm the
-window opens and the live preview starts — the selftest is headless and does not
-cover Tk bundling.
-
-The scanner binary's checksum is recorded in `vendor\bin\injection_scan.exe.sha256`
-(`<hash> *injection_scan.exe`). After rebuilding the exe with
-`native\build_injection_scan.bat`, recompute it with
+The scanner binary's checksum is recorded in
+`vendor\bin\injection_scan.exe.sha256` (`<hash> *injection_scan.exe`). After
+rebuilding it with `native\build_injection_scan.bat`, recompute with
 `certutil -hashfile vendor\bin\injection_scan.exe SHA256` and update that file.
-
-## Rebuilding notes
-
-- Close the app before rebuilding (a running exe locks `dist\`).
-- The console window is hidden (`console=False` in `packaging\HighSpeedCamera.spec`). Set
-  it to `True` and rebuild if you want a debug console with stdout tracebacks.
-- `build\` and `dist\` are git-ignored (regenerable).
