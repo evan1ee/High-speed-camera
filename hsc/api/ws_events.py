@@ -38,33 +38,47 @@ def register(app, services):
     @app.websocket("/ws/events")
     async def events(ws: WebSocket, client_id: str = "anonymous"):
         await ws.accept()
-        holder = services.lease.holder
-        # The lease holder IS the camera's status as this API defines it; see
-        # ``/api/camera/status``, which answers with the same value.
-        await ws.send_json({"kind": "hello", "payload": {
-            "client_id": client_id, "lease_holder": holder,
-            "role": "controller" if holder == client_id else "observer"}})
+        # Subscribe BEFORE greeting: sending the greeting is an await, and an
+        # event published during it would fall in the gap. Queued early is
+        # harmless -- the send loop below only starts after the greeting -- but
+        # a capture that started in that window and was never announced leaves
+        # the tab showing an idle rig.
         events_q = services.bus.subscribe()
-        # The reader is also the disconnect detector: sending is the one thing
-        # that cannot notice a client has gone, so the receive side ends the
-        # send loop.
-        reader = asyncio.create_task(_client_messages(ws, services, client_id))
+        # Nested, one block per resource, so a client that vanishes during the
+        # greeting cannot leave the subscription behind: a leaked subscriber is
+        # a slow memory leak that also lengthens every later publish, and
+        # publishing is work done on the grab thread.
         try:
+            # One suppression over both sends: a client can drop during the
+            # greeting just as well as mid-stream, and neither is a server
+            # fault worth a traceback in the log.
             with contextlib.suppress(WebSocketDisconnect):
-                while not reader.done():
-                    event = await _next_event(events_q)
-                    if event is None or event.kind == "preview":
-                        continue          # binary, on the other socket
-                    await ws.send_json({"kind": event.kind,
-                                        "payload": _plain(event.payload)})
+                holder = services.lease.holder
+                # The lease holder IS the camera's status as this API defines
+                # it; ``/api/camera/status`` answers with the same value.
+                await ws.send_json({"kind": "hello", "payload": {
+                    "client_id": client_id, "lease_holder": holder,
+                    "role": "controller" if holder == client_id
+                            else "observer"}})
+                # Started after the greeting, so its reply to a heartbeat can
+                # never overtake the hello frame. It is also the disconnect
+                # detector: sending is the one thing that cannot notice a
+                # client has gone, so the receive side ends the send loop.
+                reader = asyncio.create_task(
+                    _client_messages(ws, services, client_id))
+                try:
+                    while not reader.done():
+                        event = await _next_event(events_q)
+                        if event is None or event.kind == "preview":
+                            continue      # binary, on the other socket
+                        await ws.send_json({"kind": event.kind,
+                                            "payload": _plain(event.payload)})
+                finally:
+                    reader.cancel()
         finally:
-            # Unsubscribe first and unconditionally: a leaked subscriber is a
-            # slow memory leak that also lengthens every later publish, which
-            # is work done on the grab thread.
             services.bus.unsubscribe(events_q)
             if services.lease.holder == client_id:
                 services.lease.release(client_id)
-            reader.cancel()
 
 
 async def _client_messages(ws, services, client_id):
