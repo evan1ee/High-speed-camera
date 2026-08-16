@@ -9,6 +9,8 @@ escapes are spelled the Windows way as well as the POSIX way, because this
 rig is Windows-only and ``..\\..\\`` is a traversal there while ``..%2F`` is
 not even a single path segment.
 """
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import quote
 
@@ -108,7 +110,13 @@ def test_media_404_for_a_name_that_is_not_there(client, services, tmp_path):
 
 
 def test_media_refuses_a_path_outside_the_run_folder(client, services, tmp_path):
-    """A run id plus a crafted name must not read arbitrary files."""
+    """A run id plus a crafted name must not read arbitrary files.
+
+    This POSIX spelling never reaches the handler: starlette unquotes the path
+    before routing, so ``%2F`` becomes a separator and ``{name}`` (one segment)
+    no longer matches. The router answers it. The Windows spelling below is the
+    one that reaches the guard, which is why both are here.
+    """
     run_id = _add(services, tmp_path)
     response = client.get(f"/api/runs/{run_id}/media/..%2F..%2Frig.db")
     assert response.status_code in (400, 404)
@@ -124,7 +132,9 @@ def test_media_refuses_a_windows_traversal(client, services, tmp_path):
     run_id = _add(services, tmp_path)
     assert (tmp_path / "rig.db").is_file()          # the target really exists
     response = client.get(f"/api/runs/{run_id}/media/..%5C..%5Crig.db")
-    assert response.status_code in (400, 404)
+    assert response.status_code == 404
+    # The guard answered, not the router: this really did reach the handler.
+    assert response.json()["detail"] == "no such file"
     assert b"SQLite" not in response.content
 
 
@@ -133,29 +143,56 @@ def test_media_refuses_a_bare_parent(client, services, tmp_path):
     before it is ever sent -- an attacker's client would not."""
     run_id = _add(services, tmp_path)
     response = client.get(f"/api/runs/{run_id}/media/%2E%2E")
-    assert response.status_code in (400, 404)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "no such file"
 
 
-def test_media_refuses_an_absolute_path(client, services, tmp_path):
+@pytest.mark.parametrize("name, why", [
+    pytest.param("{db}", "absolute", id="absolute"),
+    # Not absolute: Path joins "C:rig.db" as a drive-relative name, which
+    # resolves against the process cwd rather than the run folder.
+    pytest.param("C:rig.db", "drive-relative", id="drive-relative"),
+    pytest.param(r"\\server\share\secret.png", "UNC", id="unc"),
+])
+def test_media_refuses_a_rooted_name(client, services, tmp_path, name, why):
     run_id = _add(services, tmp_path)
-    name = quote(str(tmp_path / "rig.db"), safe="")
-    assert client.get(f"/api/runs/{run_id}/media/{name}").status_code in (400,
-                                                                         404)
+    name = quote(name.format(db=str(tmp_path / "rig.db")), safe="")
+    response = client.get(f"/api/runs/{run_id}/media/{name}")
+    assert response.status_code == 400, why
+    assert response.json()["detail"] == "media name must be relative"
 
 
-def test_media_refuses_a_drive_relative_path(client, services, tmp_path):
-    """``C:rig.db`` is not absolute -- Path joins it as a drive-relative name,
-    which resolves against the process cwd, not the run folder."""
+def test_media_serves_a_name_whose_case_differs(client, services, tmp_path):
+    """Windows paths are case-insensitive, so the containment check must be
+    too -- refusing this would be a bug, not caution."""
     run_id = _add(services, tmp_path)
-    response = client.get(f"/api/runs/{run_id}/media/{quote('C:rig.db', safe='')}")
-    assert response.status_code in (400, 404)
+    response = client.get(
+        f"/api/runs/{run_id}/media/PISTON_RUN_SPEED_TIME.PNG")
+    assert response.status_code == 200
+    assert response.content.startswith(b"\x89PNG")
 
 
-def test_media_refuses_a_unc_path(client, services, tmp_path):
+@pytest.mark.skipif(sys.platform != "win32", reason="mklink is Windows-only")
+def test_media_refuses_a_junction_out_of_the_run_folder(client, services,
+                                                        tmp_path):
+    """A directory junction needs no privilege, so unlike the symlink case
+    this link traversal really executes here. ``resolve`` sees through the
+    junction; a check on the string handed in would not."""
     run_id = _add(services, tmp_path)
-    name = quote(r"\\server\share\secret.png", safe="")
-    assert client.get(f"/api/runs/{run_id}/media/{name}").status_code in (400,
-                                                                         404)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "rig.db").write_bytes(b"SQLite format 3\x00")
+    link = tmp_path / "measure" / "piston_run" / "link"
+    if subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(vault)],
+                      capture_output=True).returncode != 0:
+        pytest.skip("junctions not permitted on this machine")
+    try:
+        response = client.get(f"/api/runs/{run_id}/media/link%5Crig.db")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "no such file"
+        assert b"SQLite" not in response.content
+    finally:
+        link.rmdir()          # removes the junction, not the directory below
 
 
 def test_media_refuses_a_symlink_out_of_the_run_folder(client, services,
