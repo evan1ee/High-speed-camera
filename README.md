@@ -42,10 +42,11 @@ Capture (burst)  ─►  Find Injection  ─►  Measure spray angle
 
 ## Requirements
 
-- **Windows** (the camera SDK and `os.startfile` are Windows-specific).
+- **Windows** for *capture* — the camera SDK is Windows-only. The analysis CLIs are pure
+  Python and portable, though the documented paths use Windows separators throughout.
 - **[uv](https://docs.astral.sh/uv/)** — manages Python 3.13 and all dependencies
   (numpy, opencv-python, scipy, scikit-learn, pillow, fastapi, uvicorn; dev group adds
-  pytest and friends).
+  pytest, pytest-cov, pytest-asyncio, httpx).
   One-time setup from the repo root:
   ```
   uv sync

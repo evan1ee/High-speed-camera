@@ -200,8 +200,10 @@ React UI that replaces the window arrives in a later slice.
   before the jet columns existed still contribute their stroke and speed (per-metric `n`).
   CLI: `uv run python -m hsc.summary "data\measure\<run>" ... [--dest DIR]`.
 - **`hsc/piston_plot.py`** — tiny OpenCV XY line plotter (nice 1/2/5 ticks, grid, rotated y
-  label, NaN gaps break the curve). Deliberately not matplotlib: it would add tens of MB to the
-  frozen one-folder build for two plots.
+  label, NaN gaps break the curve). Deliberately not matplotlib: it would add tens of MB for
+  two plots. That mattered to the frozen one-folder build, which does not exist in this slice —
+  keep the rationale in view for when packaging returns rather than adding matplotlib now and
+  discovering the cost at build time.
 - **`hsc/frame_writer.py`** — `EventWriter`: background thread that writes a monitor event's
   BMP frames with cv2 (no SDK) + `injection_meta.json`, then reports
   `(dest_dir, ok, msg)` through a callback (→ `MONITOR_SAVED`); errors are reported, never
@@ -234,7 +236,8 @@ React UI that replaces the window arrives in a later slice.
   `step`. `mode` "dark"/"bright"/"step" force the feature extremum. Draws both green lines + ROI boxes
   + gap connector + mm/px onto `*_scale.bmp` and writes `calibration.json` (to `settings\` at the repo root via `settings_path`).
   CLI for scripting/tests: `uv run python -m hsc.calibrate_scale still.bmp --ref-mm 5 --roi1 x0 y0 x1 y1
-  --roi2 x0 y0 x1 y1` (`--mode` defaults to `auto`). **"Auto Calibrate"** button skips the dialog:
+  --roi2 x0 y0 x1 y1` (`--mode` defaults to `auto`). **Auto-calibration** skips the ROI step
+  entirely:
   `auto_rois` finds the two block edges in the left `region_frac` (default 1/3, avoiding the
   right-side clutter) by **per-scanline two-edge voting** — `_two_edges_bright` (longest bright run
   per scan line → its two step boundaries, for the bright block) tried first, then `_two_lines`
@@ -242,11 +245,12 @@ React UI that replaces the window arrives in a later slice.
   supporting scan lines wins and its `fit_mode` is returned. Robust to a tilted or locally-faint
   edge that a collapsed 1-D profile would wash out; refuses if two well-separated edges aren't
   present in most scan lines. Builds an ROI around each and runs the fit in the detected mode
-  (`auto_calibrate_image`). **"Measure Block"** button (`measure_block_size`) is the inverse: it
+  (`auto_calibrate_image`). **`measure_block_size`** is the inverse: it
   auto-detects a block's two edges and reports its size in **mm** using the stored calibration
   **without** overwriting `calibration.json` (writes a `*_measured.bmp`). `load_calibration()` is
-  the read API. NB: Auto Calibrate always *saves* a new calibration (assuming the entered
-  distance); Measure Block only *reads* it — calibrate on the known reference, then measure others.
+  the read API. NB: `auto_calibrate_image` always *saves* a new calibration (assuming the entered
+  distance); `measure_block_size` only *reads* it — calibrate on the known reference, then
+  measure others.
   `save_calibration` / `save_reference` back up any existing JSON to `<name>.bak` and write
   atomically (temp file + `os.replace`) so a crash mid-save can't corrupt the rig's calibration.
 - **`hsc/reference_lines.py`** — nozzle **reference lines**: the **tip edge**
@@ -456,9 +460,12 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## Conventions / gotchas
 
-- **Windows-only paths and APIs** (SDK, `os.startfile`). Python 3.13, managed by **uv**:
-  `uv sync` once creates `.venv/` from `pyproject.toml` + `uv.lock` (dev group includes
-  pytest + PyInstaller); prefix commands with `uv run`.
+- **Windows-only paths and APIs**: the camera SDK, and the backslash paths throughout. (The
+  last `os.startfile` call went with the GUI's "Open Last Folder" button — `git grep startfile`
+  now returns nothing, so nothing in `hsc/` shells out to the shell any more.) Python 3.13,
+  managed by **uv**: `uv sync` once creates `.venv/` from `pyproject.toml` + `uv.lock` (dev
+  group = pytest, pytest-cov, pytest-asyncio, httpx — **no PyInstaller**, it was dropped with
+  the Tk app); prefix commands with `uv run`.
 - Run module CLIs with `uv run python -m hsc.<module>` from the repo root; the package is never
   pip-installed (`tool.uv.package = false` — it runs in place).
 - Capture needs the IMV SDK + camera; **measurement does not** (pure cv2/scipy/sklearn on saved
