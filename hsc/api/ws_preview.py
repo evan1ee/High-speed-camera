@@ -36,6 +36,12 @@ JPEG_QUALITY = 80
 #: See ws_events.POLL_S -- same bridge, same reason.
 POLL_S = 0.05
 
+#: The cap a viewer gets before it asks for one. Not zero: a viewer that never
+#: sends a control message would otherwise have every published frame encoded
+#: on its behalf, and no browser redraws a preview faster than this. A client
+#: that genuinely wants every frame can still ask for ``fps: 0``.
+DEFAULT_FPS = 30.0
+
 
 def pack_preview(seq, width, height, timestamp, jpeg):
     """The wire frame: fixed header, then the JPEG.
@@ -61,8 +67,9 @@ def register(app, services):
         # preview open is exactly the intended use.
         await ws.accept()
         frames_q = services.bus.subscribe()
-        state = {"paused": False, "fps": 0.0}
+        state = {"paused": False, "fps": DEFAULT_FPS}
         seq, sent_at = 0, 0.0
+        loop = asyncio.get_running_loop()
         # As on the event socket, the receive side is what notices a client has
         # gone; here it also carries that client's own throttle.
         reader = asyncio.create_task(_client_control(ws, state))
@@ -78,11 +85,19 @@ def register(app, services):
                     now = time.monotonic()
                     if _wanted(state, sent_at, now):
                         sent_at = now
+                        # Off the loop: ``cv2.imencode`` is synchronous CPU
+                        # work, and run inline it owns the loop thread for the
+                        # whole call -- the coroutine never yields, so
+                        # releasing the GIL buys nothing. That loop also serves
+                        # /ws/events, so encoding on it would rebuild the very
+                        # preview-delays-events coupling these two separate
+                        # sockets exist to prevent.
+                        jpeg = await loop.run_in_executor(
+                            None, encode, event.payload["pixels"])
                         await ws.send_bytes(pack_preview(
                             seq, event.payload["width"],
                             event.payload["height"],
-                            event.payload["timestamp"],
-                            encode(event.payload["pixels"])))
+                            event.payload["timestamp"], jpeg))
         finally:
             services.bus.unsubscribe(frames_q)
             reader.cancel()

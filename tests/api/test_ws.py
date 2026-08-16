@@ -12,6 +12,7 @@ import asyncio
 import json
 import queue
 import struct
+import threading
 
 import numpy as np
 import pytest
@@ -254,6 +255,46 @@ def test_preview_client_can_set_its_own_frame_rate(client, services):
         ws.send_json({"fps": 5})
         ack = ws.receive_json()
     assert ack == {"paused": False, "fps": 5.0}
+
+
+def test_the_jpeg_encode_runs_off_the_event_loop(client, services,
+                                                 monkeypatch):
+    """``cv2.imencode`` is synchronous CPU work. Run inline it owns the loop
+    thread for the whole call -- releasing the GIL does not help, because the
+    coroutine never yields -- and the loop it owns is the one serving
+    ``/ws/events``. That is the preview-delays-events coupling the two-socket
+    split exists to prevent, one layer down.
+
+    ``pack_preview`` runs in the coroutine itself, so its thread IS the loop's:
+    comparing the two is a direct read of where the encode happened.
+    """
+    seen = {}
+    real_encode, real_pack = ws_preview.encode, ws_preview.pack_preview
+
+    def encode(pixels, *args, **kwargs):
+        seen["encode"] = threading.get_ident()
+        return real_encode(pixels, *args, **kwargs)
+
+    def pack_preview(*args, **kwargs):
+        seen["loop"] = threading.get_ident()
+        return real_pack(*args, **kwargs)
+
+    monkeypatch.setattr(ws_preview, "encode", encode)
+    monkeypatch.setattr(ws_preview, "pack_preview", pack_preview)
+    with client.websocket_connect("/ws/preview") as ws:
+        services.bus.publish("preview", timestamp=1, **FRAME)
+        ws.receive_bytes()
+    assert seen["encode"] != seen["loop"]
+
+
+def test_a_viewer_that_asks_for_nothing_is_still_capped(client, services):
+    """An uncapped default means one silent viewer encodes every frame the rig
+    publishes; a browser cannot draw faster than this anyway."""
+    with client.websocket_connect("/ws/preview") as ws:
+        ws.send_json({})
+        ack = ws.receive_json()
+    assert ws_preview.DEFAULT_FPS > 0
+    assert ack == {"paused": False, "fps": ws_preview.DEFAULT_FPS}
 
 
 @pytest.mark.parametrize("state, sent_at, now, wanted", [
