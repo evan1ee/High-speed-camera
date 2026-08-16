@@ -102,6 +102,15 @@ def test_an_unmapped_failure_is_json_not_a_traceback(services):
     assert "roi" in response.json()["message"]
 
 
+def test_a_malformed_body_still_gets_fastapis_own_validation_error(client):
+    """Pydantic's ValidationError IS a ValueError, so the broad handler
+    registration must not swallow request validation and report it as a rig
+    diagnostic."""
+    response = client.put("/api/settings", json=[1, 2])
+    assert response.status_code == 422
+    assert "detail" in response.json()
+
+
 def test_cors_headers_are_present_for_a_configured_origin(services):
     services.cors_origins = ("https://rig.vercel.app",)
     client = TestClient(create_app(services))
