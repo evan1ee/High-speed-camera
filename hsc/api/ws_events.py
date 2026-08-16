@@ -21,6 +21,8 @@ not delay a job event.
 import asyncio
 import contextlib
 import queue
+import threading
+from collections import Counter
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -34,6 +36,34 @@ POLL_S = 0.05
 
 
 def register(app, services):
+    # How many event sockets each client_id has open. The lease is released
+    # when the LAST of them closes, never on the first.
+    #
+    # Identity alone is not enough to say whose socket just closed. A
+    # controller whose connection goes half-open reconnects under the same id
+    # and carries on; when the OS finally tears the old socket down -- minutes
+    # later, not POLL_S later -- ``holder == client_id`` is still true, and
+    # releasing there would free the lease the LIVE socket owns. Two tabs
+    # sharing the default id have the same problem.
+    #
+    # Guarded because the count and the release decision must be one step: a
+    # socket opening between another's decrement and its holder check would
+    # otherwise still lose the lease.
+    live = Counter()
+    guard = threading.Lock()
+
+    def _opened(client_id):
+        with guard:
+            live[client_id] += 1
+
+    def _closed(client_id):
+        """Register a socket closing; True when it was the id's last one."""
+        with guard:
+            live[client_id] -= 1
+            if live[client_id]:
+                return False
+            del live[client_id]          # keep the tally bounded
+            return True
 
     @app.websocket("/ws/events")
     async def events(ws: WebSocket, client_id: str = "anonymous"):
@@ -44,6 +74,7 @@ def register(app, services):
         # a capture that started in that window and was never announced leaves
         # the tab showing an idle rig.
         events_q = services.bus.subscribe()
+        _opened(client_id)
         # Nested, one block per resource, so a client that vanishes during the
         # greeting cannot leave the subscription behind: a leaked subscriber is
         # a slow memory leak that also lengthens every later publish, and
@@ -77,7 +108,7 @@ def register(app, services):
                     reader.cancel()
         finally:
             services.bus.unsubscribe(events_q)
-            if services.lease.holder == client_id:
+            if _closed(client_id) and services.lease.holder == client_id:
                 services.lease.release(client_id)
 
 

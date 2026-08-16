@@ -151,6 +151,42 @@ def test_a_disconnect_unsubscribes_and_frees_the_rig(client, services):
     assert services.bus._subscribers == []
 
 
+def test_a_stale_socket_does_not_free_a_lease_a_reconnected_one_owns(client,
+                                                                     services):
+    """The half-open case, entered by hand because the stale socket has to die
+    while the live one is still open.
+
+    A controller's connection goes half-open; the client reconnects under the
+    same id and carries on. Minutes later the OS finally tears the old socket
+    down. Releasing on ``holder == client_id`` alone would free the lease the
+    LIVE socket owns, and the window is however long that teardown takes.
+    """
+    services.lease.claim("me")
+    stale = client.websocket_connect("/ws/events?client_id=me")
+    stale.__enter__()
+    stale.receive_json()                        # hello
+    with client.websocket_connect("/ws/events?client_id=me") as live:
+        live.receive_json()                     # hello
+        stale.__exit__(None, None, None)        # the half-open socket dies
+        assert services.lease.holder == "me"
+    assert services.lease.holder is None        # the last one closing does free
+
+
+def test_one_anonymous_client_closing_leaves_anothers_lease_alone(client,
+                                                                  services):
+    """Two tabs that never sent a client_id share the default id, so identity
+    alone cannot tell whose socket just closed."""
+    services.lease.claim("anonymous")
+    first = client.websocket_connect("/ws/events")
+    first.__enter__()
+    first.receive_json()                        # hello
+    with client.websocket_connect("/ws/events") as second:
+        second.receive_json()                   # hello
+        first.__exit__(None, None, None)
+        assert services.lease.holder == "anonymous"
+    assert services.lease.holder is None
+
+
 def test_a_disconnecting_observer_leaves_the_controller_alone(client,
                                                               services):
     services.lease.claim("controller")
