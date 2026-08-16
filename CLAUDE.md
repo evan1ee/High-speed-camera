@@ -511,7 +511,7 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (440 tests: import smoke, GUI wiring/dispatch, monitor
+- Tests: `uv run python -m pytest` (466 tests: import smoke, GUI wiring/dispatch, monitor
   engine/replay/wiring, frame writer, BMP row order, smart save, synthetic wedge,
   edge-detection V2 (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed /
   GUI wiring (synthetic strokes with exact ground truth), calibration load, vendor layout,
@@ -530,8 +530,13 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   parses the file and fails if it grows any branching or computation. Fix an uncovered
   line by adding the test, never by widening the omit list. `tests/test_layering.py`
   is the other half: it parses every `hsc/rig/` module's imports and fails on
-  fastapi/starlette/uvicorn/`hsc.api`, and checks the analysis modules never import the
-  layers above them. `test_erf_mode_meets_perf_budget` skips itself under `--cov`
+  fastapi/starlette/uvicorn/`hsc.api`, and sweeps the whole analysis layer
+  (`hsc/*.py` **and** `hsc/gui/*.py` — everything under `hsc/` except the three service
+  packages) for imports of `hsc.rig` / `hsc.api`. Matching is by **prefix**: the real
+  form of the violation is `from hsc.api.app import create_app`, which an equality test
+  would miss, so `violations()` treats a forbidden name as matched by the package and
+  anything below it — pinned by the guard's own probe tests.
+  `test_erf_mode_meets_perf_budget` skips itself under `--cov`
   (tracing inflates wall clock — a timing assertion must not make the gate flaky).
 - Edge-detection accuracy: `uv run python -m benchmark.run_benchmark <tag>` writes
   `benchmark/results/<tag>.csv` (synthetic wedges with exact ground truth); compare against
