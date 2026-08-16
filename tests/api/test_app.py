@@ -59,7 +59,6 @@ def test_camera_status_reports_the_lease(client, services):
     assert client.get("/api/camera/status").json()["lease_holder"] == "someone"
 
 
-@pytest.mark.xfail(reason="Task 13 adds POST /api/jobs")
 def test_lease_error_maps_to_409(client, services):
     services.lease.claim("other")
     response = client.post("/api/jobs", json={
