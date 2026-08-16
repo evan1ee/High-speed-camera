@@ -2829,6 +2829,15 @@ git commit -m "feat: runs, csv and media endpoints"
 - Consumes: `JobManager`, `ControlLease`.
 - Produces: `register(app, services)` adding `POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `POST /api/lease/claim|release|heartbeat`.
 
+**Cancel is lease-gated too (corrected 2026-08-16).** The brief below shows
+`POST /api/jobs/{id}/cancel` taking no body. That was an oversight: cancelling
+sets the event the grab loop reads, so the burst ends mid-stroke and the run is
+destroyed. An ungated cancel lets exactly the stale tab the lease exists to stop
+destroy the operator's running capture, and contradicts the spec's own rule that
+only commands are lease-gated. It takes a `ClientBody` and calls
+`lease.require`, like `POST /api/jobs`. The holder dying is covered by the 30 s
+TTL and `handover`, not by an ungated route.
+
 **Inherited from Task 9 — the lease is not enough to protect the camera.**
 The lease stops a *second client* from driving the rig, but one lease holder
 can still post two camera jobs, and two bursts on one handle interleave
