@@ -88,8 +88,12 @@ def register(app, services):
         return asdict(job)
 
     @app.post("/api/jobs/{job_id}/cancel")
-    def cancel(job_id: str):
-        # Deliberately not lease-gated: stopping the rig is the safe direction,
-        # and a burst that has to be stopped is the worst moment to discover
-        # that control has drifted to another tab.
+    def cancel(job_id: str, body: ClientBody):
+        # Lease-gated like submit, and for the same reason: cancel sets the
+        # flag the grab loop reads, so it ends the burst MID-STROKE and
+        # destroys the run. A stale tab must not be able to do that to the
+        # holder's capture. A holder who has gone away is already handled below
+        # this layer -- the lease's TTL frees it, and ``handover`` transfers it
+        # deliberately -- so no ungated route is needed to stop a runaway burst.
+        services.lease.require(body.client_id)
         return {"cancelled": services.jobs.cancel(job_id)}

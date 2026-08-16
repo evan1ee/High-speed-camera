@@ -93,7 +93,29 @@ def test_job_submit_get_and_cancel(client):
                    "duration_s": 30.0}})
     job_id = submitted.json()["id"]
     assert client.get(f"/api/jobs/{job_id}").json()["kind"] == "capture"
-    assert client.post(f"/api/jobs/{job_id}/cancel").json()["cancelled"] is True
+    cancelled = client.post(f"/api/jobs/{job_id}/cancel",
+                            json={"client_id": "me"})
+    assert cancelled.status_code == 200
+    assert cancelled.json()["cancelled"] is True
+
+
+def test_cancelling_from_a_non_holder_is_refused(client):
+    """Cancel is a command that touches hardware: it sets the flag the grab
+    loop reads, so the burst ends MID-STROKE and the run is destroyed. An
+    observer -- including the stale tab the lease exists to stop -- must not be
+    able to do that to the holder's running capture."""
+    _claim(client, "a")
+    submitted = client.post("/api/jobs", json={
+        "kind": "capture", "client_id": "a", "params": CAPTURE})
+    job_id = submitted.json()["id"]
+
+    refused = client.post(f"/api/jobs/{job_id}/cancel", json={"client_id": "b"})
+    assert refused.status_code == 409
+    assert refused.json()["code"] == "LEASE_REQUIRED"
+    assert client.get(f"/api/jobs/{job_id}").json()["state"] != "cancelled"
+
+    assert client.post(f"/api/jobs/{job_id}/cancel",
+                       json={"client_id": "a"}).json()["cancelled"] is True
 
 
 def test_unknown_job_is_404(client):
@@ -103,7 +125,9 @@ def test_unknown_job_is_404(client):
 def test_cancelling_an_unknown_job_says_so(client):
     """A cancel nobody could act on reports what happened; it is not a fault
     (the job may have finished a moment earlier)."""
-    assert client.post("/api/jobs/nope/cancel").json()["cancelled"] is False
+    _claim(client)
+    assert client.post("/api/jobs/nope/cancel",
+                       json={"client_id": "me"}).json()["cancelled"] is False
 
 
 def test_unknown_job_kind_is_400(client):
@@ -121,6 +145,7 @@ def test_a_command_without_a_client_id_is_refused_at_the_boundary(client):
     assert client.post("/api/lease/claim",
                        json={"client_id": 7}).status_code == 422
     assert client.post("/api/jobs", json={"client_id": "me"}).status_code == 422
+    assert client.post("/api/jobs/nope/cancel", json={}).status_code == 422
 
 
 def test_a_second_camera_job_is_refused_while_one_owns_the_camera(tmp_path):
