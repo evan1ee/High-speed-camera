@@ -229,6 +229,12 @@ def test_a_float_timestamp_still_fits_the_integer_wire_field():
     assert _header(pack_preview(1, 320, 120, 12.75, b""))[3] == 12
 
 
+def test_a_sequence_number_past_the_field_width_wraps_rather_than_raising():
+    """seq counts every frame the rig publishes. ``struct`` raises on anything
+    past 2**32 rather than wrapping, which would end a long-lived preview."""
+    assert _header(pack_preview(2 ** 32 + 5, 8, 4, 0, b""))[0] == 5
+
+
 def test_preview_socket_sends_frames_published_to_the_bus(client, services):
     import numpy as np
     with client.websocket_connect("/ws/preview") as ws:

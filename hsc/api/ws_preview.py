@@ -47,10 +47,13 @@ def pack_preview(seq, width, height, timestamp, jpeg):
     """The wire frame: fixed header, then the JPEG.
 
     The fields are coerced because a publisher's clock is a float and the wire
-    field is an integer -- ``struct`` will not pack one into the other.
+    field is an integer -- ``struct`` will not pack one into the other. The
+    sequence wraps rather than overflowing: it counts every frame published, so
+    a long-lived preview reaches 2**32, and ``struct`` raises there instead of
+    wrapping. A viewer reads it for gaps, which survive the wrap.
     """
-    return struct.pack(PREVIEW_HEADER, int(seq), int(width), int(height),
-                       int(timestamp)) + jpeg
+    return struct.pack(PREVIEW_HEADER, int(seq) & 0xFFFFFFFF, int(width),
+                       int(height), int(timestamp)) + jpeg
 
 
 def encode(pixels, quality=JPEG_QUALITY):
@@ -67,40 +70,47 @@ def register(app, services):
         # preview open is exactly the intended use.
         await ws.accept()
         frames_q = services.bus.subscribe()
-        state = {"paused": False, "fps": DEFAULT_FPS}
-        seq, sent_at = 0, 0.0
-        loop = asyncio.get_running_loop()
-        # As on the event socket, the receive side is what notices a client has
-        # gone; here it also carries that client's own throttle.
-        reader = asyncio.create_task(_client_control(ws, state))
+        # Nested, one block per resource, as on the event socket: the
+        # subscription is taken here and released by this block's own finally,
+        # so nothing between can leave it behind.
         try:
+            state = {"paused": False, "fps": DEFAULT_FPS}
+            seq, sent_at = 0, 0.0
+            loop = asyncio.get_running_loop()
             with contextlib.suppress(WebSocketDisconnect):
-                while not reader.done():
-                    event = await _next_event(frames_q)
-                    if event is None or event.kind != "preview":
-                        continue          # JSON, on the other socket
-                    # Counted before the throttle, so the gaps in what a viewer
-                    # receives tell it exactly what it missed.
-                    seq += 1
-                    now = time.monotonic()
-                    if _wanted(state, sent_at, now):
-                        sent_at = now
-                        # Off the loop: ``cv2.imencode`` is synchronous CPU
-                        # work, and run inline it owns the loop thread for the
-                        # whole call -- the coroutine never yields, so
-                        # releasing the GIL buys nothing. That loop also serves
-                        # /ws/events, so encoding on it would rebuild the very
-                        # preview-delays-events coupling these two separate
-                        # sockets exist to prevent.
-                        jpeg = await loop.run_in_executor(
-                            None, encode, event.payload["pixels"])
-                        await ws.send_bytes(pack_preview(
-                            seq, event.payload["width"],
-                            event.payload["height"],
-                            event.payload["timestamp"], jpeg))
+                # As on the event socket, the receive side is what notices a
+                # client has gone; here it also carries the viewer's throttle.
+                reader = asyncio.create_task(_client_control(ws, state))
+                try:
+                    while not reader.done():
+                        event = await _next_event(frames_q)
+                        if event is None or event.kind != "preview":
+                            continue      # JSON, on the other socket
+                        # Counted before the throttle, so the gaps in what a
+                        # viewer receives tell it exactly what it missed.
+                        seq += 1
+                        now = time.monotonic()
+                        # A dropped frame runs no code at all -- the skip is
+                        # this branch not being taken, never a statement.
+                        if _wanted(state, sent_at, now):
+                            sent_at = now
+                            # Off the loop: ``cv2.imencode`` is synchronous CPU
+                            # work, and run inline it owns the loop thread for
+                            # the whole call -- the coroutine never yields, so
+                            # releasing the GIL buys nothing. That loop also
+                            # serves /ws/events, so encoding on it would
+                            # rebuild the very preview-delays-events coupling
+                            # these two separate sockets exist to prevent.
+                            jpeg = await loop.run_in_executor(
+                                None, encode, event.payload["pixels"])
+                            await ws.send_bytes(pack_preview(
+                                seq, event.payload["width"],
+                                event.payload["height"],
+                                event.payload["timestamp"], jpeg))
+                finally:
+                    reader.cancel()
         finally:
             services.bus.unsubscribe(frames_q)
-            reader.cancel()
 
 
 def _wanted(state, sent_at, now):
