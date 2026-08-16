@@ -16,11 +16,16 @@ import math
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 from fastapi.responses import FileResponse
 
 from hsc import summary
 from hsc.rig.importer import import_measure_root
+
+#: Most runs one ``GET /api/runs`` may return. A rig accumulates runs forever
+#: and the whole page is built in memory, so the page size is capped rather
+#: than trusted.
+MAX_LIMIT = 500
 
 
 def _media_file(folder, name):
@@ -70,7 +75,12 @@ def register(app, services):
     # instead of stalling the event loop that also serves the event stream.
     @app.get("/api/runs")
     def list_runs(kind: str | None = None, label: str | None = None,
-                  limit: int = 100):
+                  limit: int = Query(100, ge=1, le=MAX_LIMIT)):
+        # Bounded at the boundary, because ``limit`` reaches SQL as ``LIMIT ?``
+        # and SQLite reads a NEGATIVE limit as unbounded -- ``?limit=-1`` would
+        # dump the whole runs table, every row asdict-ed and JSON-encoded in
+        # memory, without a client having to guess a big number. The table only
+        # grows, and any unauthenticated GET on the tailnet can ask.
         return [asdict(r) for r in services.store.list_runs(kind, label, limit)]
 
     @app.get("/api/runs/{run_id}")

@@ -66,6 +66,30 @@ def test_list_filters_by_kind_and_limit(client, services, tmp_path):
     assert len(client.get("/api/runs?limit=1").json()) == 1
 
 
+@pytest.mark.parametrize("limit, why", [
+    # SQLite reads a negative LIMIT as UNBOUNDED, so -1 does not clamp to a
+    # small page, it returns the whole table and bypasses the default of 100.
+    # A frontend computing a page size arithmetically can reach it by accident.
+    pytest.param(-1, "negative is unbounded in SQLite", id="negative"),
+    pytest.param(0, "a page of nothing is a bug, not a query", id="zero"),
+    pytest.param(501, "above the cap", id="over-cap"),
+])
+def test_list_rejects_a_limit_outside_the_allowed_range(client, services,
+                                                        tmp_path, limit, why):
+    _add(services, tmp_path, name="a")
+    response = client.get(f"/api/runs?limit={limit}")
+    assert response.status_code == 422, why
+    # Refused outright: no rows may come back with the error.
+    assert "detail" in response.json()
+
+
+def test_list_accepts_the_edges_of_the_allowed_range(client, services,
+                                                     tmp_path):
+    _add(services, tmp_path, name="a")
+    assert client.get("/api/runs?limit=1").status_code == 200
+    assert client.get("/api/runs?limit=500").status_code == 200
+
+
 def test_list_filters_by_label(client, services, tmp_path):
     _add(services, tmp_path, name="a")
     _add(services, tmp_path, name="b", label="other")
