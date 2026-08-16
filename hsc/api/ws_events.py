@@ -122,10 +122,18 @@ async def _client_messages(ws, services, client_id):
     """
     with contextlib.suppress(WebSocketDisconnect):
         while True:
-            await ws.receive_json()
-            services.lease.heartbeat(client_id)
-            await ws.send_json({"kind": "lease",
-                                "payload": {"holder": services.lease.holder}})
+            # A frame this cannot parse is SKIPPED, not fatal: ``receive_json``
+            # raises JSONDecodeError (a ValueError) on malformed text and
+            # KeyError on a binary frame. Letting either end the task takes the
+            # client's whole event stream down for one bad frame -- and because
+            # this is also the disconnect detector, the socket then hangs
+            # waiting for a heartbeat reply that can never come.
+            with contextlib.suppress(ValueError, KeyError):
+                await ws.receive_json()
+                services.lease.heartbeat(client_id)
+                await ws.send_json(
+                    {"kind": "lease",
+                     "payload": {"holder": services.lease.holder}})
 
 
 async def _next_event(events_q, timeout=POLL_S):

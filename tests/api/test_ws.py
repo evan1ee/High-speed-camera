@@ -142,6 +142,23 @@ def test_a_heartbeat_cannot_renew_somebody_elses_lease(services):
         assert services.lease.holder is None
 
 
+@pytest.mark.parametrize("send, payload", [
+    ("send_text", "{not json"),                 # JSONDecodeError
+    ("send_bytes", b"\x00\x01"),                # KeyError: 'text'
+])
+def test_a_frame_the_event_socket_cannot_parse_is_skipped_not_fatal(
+        client, send, payload):
+    """One bad frame must not cost a client its whole event stream. The valid
+    heartbeat that follows is answered, which is only possible if the reader
+    survived the bad one."""
+    with client.websocket_connect("/ws/events?client_id=me") as ws:
+        ws.receive_json()                       # hello
+        getattr(ws, send)(payload)
+        ws.send_json({"kind": "heartbeat"})
+        reply = ws.receive_json()
+    assert reply["kind"] == "lease"
+
+
 def test_a_disconnect_unsubscribes_and_frees_the_rig(client, services):
     """A leaked subscriber is a slow memory leak that also slows every later
     publish, and a controller whose tab is gone must not keep the rig."""
@@ -255,6 +272,32 @@ def test_preview_client_can_set_its_own_frame_rate(client, services):
         ws.send_json({"fps": 5})
         ack = ws.receive_json()
     assert ack == {"paused": False, "fps": 5.0}
+
+
+@pytest.mark.parametrize("send, payload", [
+    ("send_text", "{not json"),                 # JSONDecodeError
+    ("send_bytes", b"\x00\x01"),                # KeyError: 'text'
+    ("send_json", {"fps": "fast"}),             # ValueError from float()
+    ("send_json", [1, 2]),                      # AttributeError: no .get
+])
+def test_a_frame_the_preview_socket_cannot_parse_is_skipped_not_fatal(
+        client, send, payload):
+    with client.websocket_connect("/ws/preview") as ws:
+        getattr(ws, send)(payload)
+        ws.send_json({"paused": True})
+        ack = ws.receive_json()
+    assert ack == {"paused": True, "fps": ws_preview.DEFAULT_FPS}
+
+
+def test_a_bad_fps_leaves_the_whole_control_message_unapplied(client):
+    """Half-applying it would pause a viewer that asked to be paused AND
+    retimed, then never acknowledge that it had -- the viewer would believe it
+    was still live."""
+    with client.websocket_connect("/ws/preview") as ws:
+        ws.send_json({"paused": True, "fps": "fast"})
+        ws.send_json({})                        # one it can parse
+        ack = ws.receive_json()
+    assert ack == {"paused": False, "fps": ws_preview.DEFAULT_FPS}
 
 
 def test_the_jpeg_encode_runs_off_the_event_loop(client, services,

@@ -125,10 +125,20 @@ async def _client_control(ws, state):
     """
     with contextlib.suppress(WebSocketDisconnect):
         while True:
-            message = await ws.receive_json()
-            state["paused"] = bool(message.get("paused", state["paused"]))
-            state["fps"] = float(message.get("fps", state["fps"]))
-            await ws.send_json(dict(state))
+            # Skipped, not fatal, as on the event socket -- and with two more
+            # ways to be unparseable than there: ``{"fps": "fast"}`` raises
+            # ValueError out of float() and a bare JSON list has no ``.get``.
+            with contextlib.suppress(AttributeError, KeyError, TypeError,
+                                     ValueError):
+                message = await ws.receive_json()
+                # Both read before either is stored, so a message this cannot
+                # coerce leaves the state exactly as it was rather than half
+                # applied and never acknowledged -- a viewer told nothing must
+                # not have been silently paused.
+                paused = bool(message.get("paused", state["paused"]))
+                fps = float(message.get("fps", state["fps"]))
+                state.update(paused=paused, fps=fps)
+                await ws.send_json(dict(state))
 
 
 async def _next_event(frames_q, timeout=POLL_S):
