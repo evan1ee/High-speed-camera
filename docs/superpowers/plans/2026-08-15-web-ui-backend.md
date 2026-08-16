@@ -3211,6 +3211,22 @@ git commit -m "feat: JSON event and binary preview WebSockets"
 - Consumes: everything.
 - Produces: `uv run python -m hsc.api --host --port --data-root --spa --cors`.
 
+**Two things must be settled before the gate can be trusted, both found in
+earlier reviews:**
+
+1. **A wall-clock assertion will make the gate intermittently red.**
+   `tests/test_erf_edge.py::test_erf_mode_meets_perf_budget` asserts
+   `dt < 1.5` seconds, and coverage tracing inflates it — so the very run that
+   gates the branch is the run most likely to fail it, for reasons unrelated to
+   the code under test. It predates this plan, so leave the measurement, but it
+   must not gate: skip it under coverage, or drop the timing assertion while
+   keeping the correctness assertions. An intermittently red gate teaches
+   people to ignore the gate.
+2. **Test output must be pristine.** `fastapi.testclient` emits
+   `StarletteDeprecationWarning: Using httpx with starlette.testclient is
+   deprecated`. `httpx` is the authorised dependency, so do not swap it — add a
+   `filterwarnings` entry under `[tool.pytest.ini_options]` instead.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
