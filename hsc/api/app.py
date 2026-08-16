@@ -13,21 +13,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hsc.api.errors import to_error_code
-
-#: Exception types translated by :func:`hsc.api.errors.to_error_code`, and the
-#: base classes every rig diagnostic arrives as. Registered INDIVIDUALLY rather
-#: than only as ``Exception``: Starlette routes an ``Exception`` handler to
-#: ``ServerErrorMiddleware``, which sends the response and then re-raises, so a
-#: mapped failure (a 409 for a lease conflict, say) would still be logged and
-#: re-raised as an unhandled server error. Handlers for concrete classes go to
-#: ``ExceptionMiddleware``, which simply returns the response.
-TRANSLATED = (RuntimeError, ValueError, OSError)
+from hsc.api.errors import ErrorTranslationMiddleware
 
 
 @dataclass
@@ -44,32 +34,30 @@ class RigServices:
 def create_app(services):
     @asynccontextmanager
     async def lifespan(app):
-        yield
-        # The camera's lifetime ends here. CameraWorker opens the device once
-        # and never closes it -- it cannot know when the process is finished
-        # with it -- so without this the handle is held until the process dies
-        # and the next one cannot open the camera. JobManager.close cancels and
-        # joins the jobs first, then closes.
-        services.jobs.close()
+        try:
+            yield
+        finally:
+            # The camera's lifetime ends here. CameraWorker opens the device
+            # once and never closes it -- it cannot know when the process is
+            # finished with it -- so without this the handle is held until the
+            # process dies and the next one cannot open the camera.
+            # JobManager.close cancels and joins the jobs first, then closes.
+            # In a ``finally``, so a startup step added above the yield later
+            # cannot leak the device by failing.
+            services.jobs.close()
 
     app = FastAPI(title="High Speed Camera Rig", lifespan=lifespan)
     app.state.services = services
 
+    # Order matters: ``add_middleware`` prepends, so the error translator is
+    # added FIRST to end up INSIDE CORSMiddleware -- its response then travels
+    # back out through CORS and carries the origin header. See
+    # ErrorTranslationMiddleware for what the alternative costs.
+    app.add_middleware(ErrorTranslationMiddleware)
     if services.cors_origins:
         app.add_middleware(
             CORSMiddleware, allow_origins=list(services.cors_origins),
             allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-    async def _errors(request: Request, exc: Exception):
-        code, status = to_error_code(exc)
-        # The rig's own words are the human fallback and are never discarded:
-        # the code is what the UI branches on, the message is what the operator
-        # reads ("the piston never gets blacker than 18 grey").
-        return JSONResponse(status_code=status,
-                            content={"code": code, "message": str(exc)})
-
-    for exc_type in (*TRANSLATED, Exception):
-        app.add_exception_handler(exc_type, _errors)
 
     @app.get("/api/health")
     async def health():

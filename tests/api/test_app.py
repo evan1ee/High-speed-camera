@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """App wiring: health, settings, CORS, SPA mount, error translation, shutdown."""
+import sqlite3
+
 import pytest
 from fastapi.testclient import TestClient
 
 from hsc.api.app import create_app
 from hsc.api.deps import services_of
-from hsc.api.errors import to_error_code
+from hsc.api.errors import ErrorTranslationMiddleware, to_error_code
 from hsc.hardware.fake import FakeCamera
 from hsc.rig.jobs import RigBusy
 from hsc.rig.lease import LeaseError
@@ -93,13 +95,51 @@ def test_a_rig_diagnostic_keeps_its_message(services):
         "message": "No measurable injection in this burst"}
 
 
-def test_an_unmapped_failure_is_json_not_a_traceback(services):
-    services.store = RaisingStore(KeyError("roi"))
-    client = TestClient(create_app(services), raise_server_exceptions=False)
-    response = client.get("/api/settings")
+@pytest.mark.parametrize("exc, expected", [
+    (KeyError("roi"), "roi"),
+    # Not hypothetical: RunStore is SQLite and backs both settings routes.
+    (sqlite3.OperationalError("database is locked"), "database is locked"),
+])
+def test_an_unmapped_failure_is_json_and_is_not_re_raised(services, exc,
+                                                          expected):
+    """A default TestClient re-raises anything that escapes to the ASGI server,
+    so passing here IS the assertion that nothing was re-raised -- uvicorn logs
+    no unhandled-ASGI traceback for a failure this layer answered."""
+    services.store = RaisingStore(exc)
+    response = TestClient(create_app(services)).get("/api/settings")
     assert response.status_code == 500
     assert response.json()["code"] == "INTERNAL"
-    assert "roi" in response.json()["message"]
+    assert expected in response.json()["message"]
+
+
+@pytest.mark.parametrize("exc, status", [
+    (sqlite3.OperationalError("database is locked"), 500),
+    (RuntimeError("No measurable injection in this burst"), 422),
+])
+def test_an_error_response_still_carries_the_cors_header(services, exc, status):
+    """Without the header a browser SPA on the configured origin cannot read
+    the error at all -- it sees a CORS failure instead of the body, which is
+    the whole reason cors_origins exists."""
+    services.store = RaisingStore(exc)
+    services.cors_origins = ("https://rig.vercel.app",)
+    response = TestClient(create_app(services)).get(
+        "/api/settings", headers={"Origin": "https://rig.vercel.app"})
+    assert response.status_code == status
+    assert response.headers["access-control-allow-origin"] == \
+        "https://rig.vercel.app"
+
+
+def test_a_failure_after_the_response_started_is_left_to_the_server():
+    """The status line is already on the wire: a second one would corrupt the
+    stream, so this is the one case that is not answered here."""
+    async def half_sent(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": []})
+        raise RuntimeError("No measurable injection in this burst")
+
+    client = TestClient(ErrorTranslationMiddleware(half_sent))
+    with pytest.raises(RuntimeError, match="No measurable injection"):
+        client.get("/")
 
 
 def test_a_malformed_body_still_gets_fastapis_own_validation_error(client):

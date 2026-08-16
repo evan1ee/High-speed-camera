@@ -9,6 +9,8 @@ the human fallback, but the frontend needs to branch (show the lighting
 numbers, offer a recapture), so each maps to a stable code.
 """
 
+from fastapi.responses import JSONResponse
+
 from hsc.rig.jobs import RigBusy
 from hsc.rig.lease import LeaseError
 
@@ -40,3 +42,64 @@ def to_error_code(exc):
         if needle in text:
             return code, status
     return "INTERNAL", 500
+
+
+def error_response(exc):
+    """The one JSON body this layer answers a failure with.
+
+    The rig's own words are the human fallback and are never discarded: the
+    code is what the UI branches on, the message is what the operator reads
+    ("the piston never gets blacker than 18 grey").
+    """
+    code, status = to_error_code(exc)
+    return JSONResponse(status_code=status,
+                        content={"code": code, "message": str(exc)})
+
+
+class ErrorTranslationMiddleware:
+    """Answer any exception with :func:`error_response`, from INSIDE CORS.
+
+    Deliberately a middleware rather than ``add_exception_handler(Exception,
+    ...)``. Starlette diverts the ``Exception`` key to ``ServerErrorMiddleware``
+    (``applications.py`` build_middleware_stack), which sits OUTSIDE
+    ``CORSMiddleware`` and, after sending the response, RE-RAISES it
+    (``middleware/errors.py``). Two things follow, and both were measured on
+    this app with a ``sqlite3.OperationalError`` -- which is not hypothetical,
+    the store behind both settings routes is SQLite:
+
+    * uvicorn logs a full unhandled-ASGI traceback for a failure this layer
+      believes it mapped;
+    * the response carries no ``access-control-allow-origin``, so a browser SPA
+      on the configured cross-origin cannot read the error at all -- it sees a
+      CORS failure instead of the body, which is the whole reason
+      ``cors_origins`` exists.
+
+    Installed inside ``CORSMiddleware``, so the mapped response goes back out
+    through it and gets the header, and nothing is re-raised.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            # Lifespan and WebSocket: no HTTP response exists to answer with.
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def _send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        except Exception as exc:
+            if started:
+                # The status line is already on the wire; a second one would
+                # corrupt the stream. Let it reach the server, as starlette's
+                # own ServerErrorMiddleware does in the same situation.
+                raise
+            await error_response(exc)(scope, receive, send)
