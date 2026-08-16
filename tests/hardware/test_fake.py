@@ -108,6 +108,16 @@ def test_grab_before_start_is_an_error():
         cam.grab(1000)
 
 
+def test_saving_a_released_frame_is_an_error(tmp_path):
+    """The real SDK's buffer is gone once released, so the fake refuses too --
+    otherwise a save-after-release bug would only ever show up on the rig."""
+    cam = _started()
+    frame = cam.grab(1000)
+    cam.release(frame)
+    with pytest.raises(CameraError, match="released before saving"):
+        cam.save(frame, tmp_path / "frame.bmp")
+
+
 def test_open_rejects_a_folder_with_no_frames(tmp_path):
     with pytest.raises(CameraError, match="no frames"):
         FakeCamera(tmp_path).open(1)

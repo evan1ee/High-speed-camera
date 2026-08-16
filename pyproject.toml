@@ -9,6 +9,8 @@ dependencies = [
     "scipy>=1.16",
     "scikit-learn>=1.9",
     "pillow>=11.2",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.3",
 ]
 
 [dependency-groups]
@@ -17,6 +19,7 @@ dev = [
     "pyinstaller>=6.21",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
+    "httpx>=0.28.1",
 ]
 
 # The hsc/ package is run in place from the repo root (via `uv run`), never
