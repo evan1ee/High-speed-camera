@@ -285,6 +285,13 @@ def test_preview_client_can_set_its_own_frame_rate(client, services):
     ("send_bytes", b"\x00\x01"),                # KeyError: 'text'
     ("send_json", {"fps": "fast"}),             # ValueError from float()
     ("send_json", [1, 2]),                      # AttributeError: no .get
+    # float() takes these; JSON cannot carry them back. NaN also made _wanted
+    # False forever (both fps <= 0 and x >= 1.0/nan are False), so the viewer
+    # was muted for good -- and the ack that would have said so encodes as the
+    # bare token NaN, which a browser's JSON.parse rejects. Refused at ingest.
+    ("send_json", {"fps": "nan"}),
+    ("send_json", {"fps": "inf"}),
+    ("send_json", {"fps": float("-inf")}),
 ])
 def test_a_frame_the_preview_socket_cannot_parse_is_skipped_not_fatal(
         client, send, payload):
@@ -293,6 +300,15 @@ def test_a_frame_the_preview_socket_cannot_parse_is_skipped_not_fatal(
         ws.send_json({"paused": True})
         ack = ws.receive_json()
     assert ack == {"paused": True, "fps": ws_preview.DEFAULT_FPS}
+
+
+def test_a_valid_fps_is_still_accepted_after_a_refused_one(client):
+    """The refusal must cost the viewer the one message, not the socket."""
+    with client.websocket_connect("/ws/preview") as ws:
+        ws.send_json({"fps": "nan"})
+        ws.send_json({"fps": 12})
+        ack = ws.receive_json()
+    assert ack == {"paused": False, "fps": 12.0}
 
 
 def test_a_bad_fps_leaves_the_whole_control_message_unapplied(client):
@@ -351,6 +367,11 @@ def test_a_viewer_that_asks_for_nothing_is_still_capped(client, services):
     ({"paused": False, "fps": 10.0}, 100.0, 100.2, True),   # interval passed
     ({"paused": False, "fps": 10.0}, 100.0, 100.05, False),  # too soon: drop
     ({"paused": True, "fps": 0.0}, 0.0, 100.0, False),      # paused: drop
+    # Belt and braces on the one value that mutes a viewer permanently: with
+    # NaN every other test here is False, so the frame is never wanted again.
+    # _finite keeps it out of the state; if it ever gets in, send, don't mute.
+    ({"paused": False, "fps": float("nan")}, 100.0, 100.0, True),
+    ({"paused": True, "fps": float("nan")}, 100.0, 100.0, False),
 ])
 def test_a_throttled_viewer_drops_the_frames_it_cannot_take(state, sent_at,
                                                             now, wanted):

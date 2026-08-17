@@ -19,6 +19,7 @@ must fall behind in time, not in memory.
 
 import asyncio
 import contextlib
+import math
 import queue
 import struct
 import time
@@ -123,7 +124,26 @@ def _wanted(state, sent_at, now):
     if state["paused"]:
         return False
     fps = state["fps"]
-    return fps <= 0 or (now - sent_at) >= 1.0 / fps
+    # isfinite first: with NaN both of the tests below are False, so the viewer
+    # is muted for the rest of its connection with no way back. ``_finite``
+    # keeps NaN out of the state; this is the second lock on the same door,
+    # because the cost of being wrong here is a preview that never draws again.
+    return not math.isfinite(fps) or fps <= 0 or (now - sent_at) >= 1.0 / fps
+
+
+def _finite(value):
+    """*value*, or refuse it -- ``float()`` accepts more than JSON can carry.
+
+    ``{"fps": "nan"}`` and ``{"fps": "inf"}`` parse happily, and both then
+    poison the ack: ``json.dumps`` writes them as the bare tokens ``NaN`` and
+    ``Infinity``, which a browser's ``JSON.parse`` rejects outright. The viewer
+    would be left unable to read the very state that says what happened to it.
+    Raised as the ValueError the caller already treats as "unparseable
+    message", so the state is left exactly as it was.
+    """
+    if not math.isfinite(value):
+        raise ValueError(f"fps must be a finite number, got {value}")
+    return value
 
 
 async def _client_control(ws, state):
@@ -146,7 +166,7 @@ async def _client_control(ws, state):
                 # applied and never acknowledged -- a viewer told nothing must
                 # not have been silently paused.
                 paused = bool(message.get("paused", state["paused"]))
-                fps = float(message.get("fps", state["fps"]))
+                fps = _finite(float(message.get("fps", state["fps"])))
                 state.update(paused=paused, fps=fps)
                 await ws.send_json(dict(state))
 
