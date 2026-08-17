@@ -8,6 +8,7 @@ FakeCamera`; the only implementation that touches the DLL is
 :mod:`hsc.hardware.imv`, which holds no logic and is excluded from coverage.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -69,6 +70,36 @@ class Frame:
 
 
 @dataclass(frozen=True)
+class Grab:
+    """One grab attempt, before anyone has decided what it MEANS.
+
+    The SDK answers with an integer status and a frame struct. Turning that
+    status into "a frame" or "nothing" is a decision, and decisions may not
+    live in :mod:`hsc.hardware.imv` -- it is excluded from coverage and a test
+    holds it to pure delegation. The adapter used to make it anyway, laundered
+    through a dict lookup that the AST guard could not see, and the cost was
+    real: EVERY non-OK status, a genuine SDK fault as much as a timeout, became
+    ``None``, which the worker reads as a truncated burst. An SDK error
+    mid-stroke was therefore filed as a short stroke, in the one file no test
+    covers. So the adapter hands back both halves and the rig layer decides,
+    where that can be tested.
+
+    ``ok_status`` travels with the status so the rig layer never needs the
+    vendor's own constant; ``build`` is deferred and is ``None`` unless the
+    grab succeeded, because a failed grab leaves the frame struct without a
+    valid buffer and reading it would take the process down with it.
+    """
+
+    status: int
+    ok_status: int
+    build: Callable[[], "Frame"] | None = None
+
+    @property
+    def ok(self):
+        return self.status == self.ok_status
+
+
+@dataclass(frozen=True)
 class CaptureConfig:
     """What to program onto the camera before grabbing."""
 
@@ -102,7 +133,11 @@ class CameraDevice(Protocol):
         ...
     def configure(self, cfg: CaptureConfig) -> None: ...
     def start(self) -> None: ...
-    def grab(self, timeout_ms: int) -> Frame | None: ...
+    def grab(self, timeout_ms: int) -> Grab:
+        """The SDK's raw answer, NOT a frame. See :class:`Grab`: what a non-OK
+        status means is the rig layer's decision, because that is where it can
+        be tested."""
+        ...
     def clone(self, frame: Frame) -> Frame: ...
     def release(self, frame: Frame) -> None: ...
     def save(self, frame: Frame, path: Path) -> None: ...

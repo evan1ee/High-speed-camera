@@ -8,6 +8,13 @@ NO logic: no branching, no computation, only delegation. A test parses this
 file and fails if that stops being true, so anything that could be wrong is
 somewhere it can be tested.
 
+That includes what a grab's STATUS means. ``grab`` returns the SDK's status
+and an unevaluated frame builder (:class:`hsc.hardware.device.Grab`) and
+decides nothing; ``hsc/rig/worker.py`` reads it. An earlier version made the
+decision here through a dict lookup -- invisible to the AST guard, and it
+flattened every non-OK status, a real SDK fault as much as a timeout, into
+``None``, which the worker files as a truncated burst.
+
 Error contract: SDK failures surface as plain ``RuntimeError`` (raised by
 ``capture_image.check``), NOT ``hsc.hardware.device.CameraError`` --
 ``FakeCamera`` raises ``CameraError`` directly, so the two ``CameraDevice``
@@ -18,12 +25,13 @@ caller above has one exception type to catch.
 """
 
 from ctypes import byref, c_void_p, string_at
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 
 from hsc import capture_image
-from hsc.hardware.device import Frame, sdk_device_index
+from hsc.hardware.device import Frame, Grab, sdk_device_index
 
 
 class ImvCamera:
@@ -54,10 +62,12 @@ class ImvCamera:
                             self._sdk["IMV_OK"], "Start grabbing")
 
     def grab(self, timeout_ms):
+        """The SDK's status and an unevaluated frame builder -- see
+        :class:`hsc.hardware.device.Grab`. What a non-OK status means is
+        decided in ``hsc/rig/worker.py``, where it is covered by tests."""
         raw = self._sdk["IMV_Frame"]()
-        status = self._cam.IMV_GetFrame(raw, timeout_ms)
-        handler = {self._sdk["IMV_OK"]: _to_frame}.get(status, _to_none)
-        return handler(self._sdk, raw)
+        return Grab(self._cam.IMV_GetFrame(raw, timeout_ms),
+                    self._sdk["IMV_OK"], partial(_to_frame, self._sdk, raw))
 
     def clone(self, frame):
         raw = self._sdk["IMV_Frame"]()
@@ -87,10 +97,6 @@ def _to_frame(sdk, raw):
         pixels=np.frombuffer(
             string_at(raw.pData, info.size),
             dtype=np.uint8).reshape(info.height, info.width))
-
-
-def _to_none(sdk, raw):
-    return None
 
 
 class _ImvFrame(Frame):

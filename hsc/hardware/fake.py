@@ -17,23 +17,33 @@ import shutil
 from pathlib import Path
 
 from hsc import injection_extract
-from hsc.hardware.device import CameraError, CaptureConfig, Frame
+from hsc.hardware.device import CameraError, CaptureConfig, Frame, Grab
 from hsc.measure_angle import load_gray
 
 #: Nanoseconds, matching the SDK ticks the rig records (measured 2026-08-07:
 #: 954320 ticks between frames at 1047.9 fps).
 TICKS_PER_SECOND = 1_000_000_000
 
+#: Stand-ins for the vendor's status codes. Nothing above the seam reads the
+#: VALUE -- ``Grab.ok`` only compares it with the ok status the same grab
+#: carries -- so any distinct pair replays the contract faithfully.
+OK_STATUS = 0
+#: The burst is over: the replay ran out of frames, as the camera does when it
+#: stops delivering. ``fail_status`` replaces it with a fault code, because a
+#: real SDK reports both through the same integer.
+NO_FRAME_STATUS = -3
+
 
 class FakeCamera:
     """Replays *source_dir* frame by frame. See module docstring."""
 
     def __init__(self, source_dir, fps=1738.7, drop_after=None,
-                 roi_override=None):
+                 roi_override=None, fail_status=NO_FRAME_STATUS):
         self._source = Path(source_dir)
         self._fps = float(fps)
         self._drop_after = drop_after
         self._roi_override = roi_override
+        self._fail_status = fail_status
         self._files = []
         self._index = 0
         self._block = 0
@@ -67,10 +77,11 @@ class FakeCamera:
 
     # -- frames ------------------------------------------------------------
     def grab(self, timeout_ms):
+        """A ``Grab``, not a frame: the status is the rig layer's to read."""
         if not self._grabbing:
             raise CameraError("camera is not grabbing")
         if self._index >= len(self._files):
-            return None
+            return Grab(self._fail_status, OK_STATUS)
         path = self._files[self._index]
         self._index += 1
         self._block += 1
@@ -84,7 +95,7 @@ class FakeCamera:
         frame = Frame(width=width, height=height, block_id=self._block,
                       timestamp=ticks, pixels=pixels)
         self._sources[id(frame)] = path
-        return frame
+        return Grab(OK_STATUS, OK_STATUS, lambda: frame)
 
     def clone(self, frame):
         clone = Frame(frame.width, frame.height, frame.block_id,

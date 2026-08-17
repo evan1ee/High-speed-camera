@@ -59,8 +59,15 @@ class BurstResult:
     #: measured to the break, so ``fps`` still reads ~1048 and
     #: ``detect_piston_bounds`` scales its trigger off the travel it can see,
     #: happily reporting a shortened stroke and a plausible, quietly low peak
-    #: speed. This flag is the only warning anyone gets.
+    #: speed. This flag is the operator's warning; ``hsc.rig.jobs`` carries it
+    #: onto the run row so it survives the event that announced it.
     truncated: bool
+    #: The non-OK SDK status that ended the burst, or ``None`` when it ran to
+    #: time or was stopped. The rig cannot tell a timeout from a fault (the
+    #: vendor wrapper exposes only IMV_OK), so it records which status it was
+    #: rather than discarding the distinction -- which is what the adapter did
+    #: before this decision moved up here.
+    grab_status: int | None = None
 
 
 class CameraWorker:
@@ -116,20 +123,30 @@ class CameraWorker:
                           size=f"{cfg.width}x{cfg.height}")
 
         clones, ticks, block_ids = [], [], []
-        truncated = False
+        truncated, grab_status = False, None
         started = time.perf_counter()
         deadline = started + duration_s
         try:
             while time.perf_counter() < deadline:
                 if cancel is not None and cancel():
                     break               # the operator stopped it, not a fault
-                frame = self._guard("Get frame", self._device.grab, 1000)
-                if frame is None:
-                    # The camera stopped delivering with time left on the
-                    # clock. Everything grabbed so far is kept -- but see
+                grab = self._guard("Get frame", self._device.grab, 1000)
+                if not grab.ok:
+                    # The camera did not deliver, with time left on the clock.
+                    # Everything grabbed so far is kept -- but see
                     # BurstResult.truncated: nothing downstream can infer this.
-                    truncated = True
+                    #
+                    # The STATUS is kept too, and this is where that decision
+                    # belongs. The SDK adapter used to make it, mapping every
+                    # non-OK status -- a genuine fault as much as a timeout --
+                    # onto None, in the one file no test covers. The worker
+                    # cannot tell the two apart either (the vendor wrapper
+                    # exposes only IMV_OK), but it can record which status it
+                    # was, so the burst that ended carries the reason instead
+                    # of erasing it.
+                    truncated, grab_status = True, grab.status
                     break
+                frame = self._guard("Get frame", grab.build)
                 try:
                     self._check_size(frame, cfg)
                     clones.append(
@@ -147,7 +164,8 @@ class CameraWorker:
                             capture_image.make_frame_path(
                                 output_dir, prefix, number, ext))
             result = BurstResult(output_dir, len(clones), fps,
-                                 _dropped(block_ids), elapsed, truncated)
+                                 _dropped(block_ids), elapsed, truncated,
+                                 grab_status)
             _write_meta(output_dir, result, ticks, cfg)
         finally:
             for clone in clones:
@@ -157,7 +175,8 @@ class CameraWorker:
         # warning line lives here now.
         self._bus.publish("capture_done", output_dir=str(output_dir),
                           frames=result.frames, fps=result.fps,
-                          dropped=result.dropped, truncated=result.truncated)
+                          dropped=result.dropped, truncated=result.truncated,
+                          grab_status=result.grab_status)
         return result
 
     def close(self):
@@ -228,6 +247,8 @@ def _write_meta(output_dir, result, ticks, cfg):
         # Travels with the frames, so a run imported later still says whether
         # the stroke it holds is the whole stroke. See BurstResult.truncated.
         "truncated": result.truncated,
+        # And WHY it stopped, when the camera is what ended it.
+        "grab_status": result.grab_status,
         "aspect": f"{cfg.width}x{cfg.height}",
         "width": cfg.width, "height": cfg.height,
     }), encoding="utf-8")

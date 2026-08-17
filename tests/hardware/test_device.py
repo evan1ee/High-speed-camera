@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from hsc.hardware.device import (CameraConfigError, CaptureConfig, Frame,
-                                  sdk_device_index)
+                                  Grab, sdk_device_index)
 
 
 def test_frame_exposes_size_and_timing():
@@ -87,3 +87,24 @@ def test_frame_is_hashable():
     # Should be usable in a set
     frame_set = {frame}
     assert frame in frame_set
+
+
+def test_a_grab_that_matches_the_ok_status_is_ok():
+    """The comparison the SDK adapter used to make for itself, in a dict
+    lookup the no-logic guard could not see. It lives here now, where it is
+    covered -- and where the worker can tell an ended burst from a fault."""
+    frame = Frame(8, 4, 1, 0, np.zeros((4, 8), dtype=np.uint8))
+    grab = Grab(status=0, ok_status=0, build=lambda: frame)
+    assert grab.ok is True
+    assert grab.build() is frame
+
+
+@pytest.mark.parametrize("status", [-3, -101, 1])
+def test_any_other_status_is_not_ok_and_carries_no_frame(status):
+    """Every non-OK status -- a timeout and a genuine fault alike -- used to
+    become None, so the reason a burst ended was thrown away before anyone
+    could report it. The value survives now; only ``ok`` is decided."""
+    grab = Grab(status=status, ok_status=0)
+    assert grab.ok is False
+    assert grab.status == status
+    assert grab.build is None

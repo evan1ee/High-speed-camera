@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from hsc.hardware import fake
 from hsc.hardware.device import CameraError, CaptureConfig
 from hsc.hardware.fake import FakeCamera
 from hsc.rig.events import EventBus
@@ -24,6 +25,16 @@ CFG = CaptureConfig(width=320, height=120, exposure_us=500.0)
 def _worker(tmp_path, bus=None, **kwargs):
     cam = FakeCamera(BURST, **kwargs)
     return CameraWorker(cam, bus or EventBus(), tmp_path / "captures"), cam
+
+
+def _after(n):
+    """A cancel callback that returns True from the *n*-th call on."""
+    seen = {"n": 0}
+
+    def cancel():
+        seen["n"] += 1
+        return seen["n"] > n
+    return cancel
 
 
 def _payloads(q):
@@ -162,6 +173,35 @@ def test_a_burst_that_ended_early_is_flagged_as_truncated(tmp_path):
     assert _payloads(q)["capture_done"]["truncated"] is True
 
 
+def test_the_status_that_ended_the_burst_is_recorded_not_discarded(tmp_path):
+    """The SDK adapter used to map EVERY non-OK status -- a genuine fault as
+    much as a timeout -- onto None, in the one file no test covers, so an SDK
+    error mid-stroke was filed as a short stroke and the reason was gone. The
+    decision lives in the worker now, and the status rides on the result."""
+    from hsc import piston_track
+    bus = EventBus()
+    worker, _cam = _worker(tmp_path, bus=bus, fail_status=-101)
+    q = bus.subscribe()
+    result = worker.capture_piston(CFG, duration_s=10.0)
+    meta = json.loads(
+        (result.output_dir / piston_track.CAPTURE_META_NAME
+         ).read_text(encoding="utf-8"))
+    assert result.truncated is True
+    assert result.grab_status == -101
+    assert meta["grab_status"] == -101
+    assert _payloads(q)["capture_done"]["grab_status"] == -101
+
+
+def test_a_burst_that_was_not_ended_by_the_camera_has_no_status(tmp_path):
+    """Stopped by the operator, not by the SDK: there is no status to report,
+    and a zero would read as one."""
+    worker, _cam = _worker(tmp_path)
+    result = worker.capture_piston(CFG, duration_s=10.0,
+                                   cancel=_after(4))
+    assert result.truncated is False
+    assert result.grab_status is None
+
+
 def test_a_one_frame_burst_still_writes_usable_timing(tmp_path):
     """Stop pressed the instant the burst starts: one frame is not a speed
     curve, but the folder must still be a complete, readable run."""
@@ -256,4 +296,5 @@ def test_progress_and_completion_are_published(tmp_path):
         "fps": result.fps,
         "dropped": 0,
         "truncated": True,          # the fixture is shorter than the burst
+        "grab_status": fake.NO_FRAME_STATUS,
     }

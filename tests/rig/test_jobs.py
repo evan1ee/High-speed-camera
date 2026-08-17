@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from hsc.hardware.device import CameraError, CaptureConfig
+from hsc.hardware import fake
+from hsc.hardware.device import CameraError, CaptureConfig, Grab
 from hsc.hardware.fake import FakeCamera
 from hsc.rig import jobs as jobs_module
 from hsc.rig.events import EventBus
@@ -432,7 +433,7 @@ class _SilentCamera(FakeCamera):
     """Opens and starts, then never delivers a frame."""
 
     def grab(self, timeout_ms):
-        return None
+        return Grab(fake.NO_FRAME_STATUS, fake.OK_STATUS)
 
 
 class _GatedCamera(_CountingCamera):
