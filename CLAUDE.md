@@ -271,12 +271,27 @@ React UI that replaces the window arrives in a later slice.
   `device.py` is the protocol; `imv.py` is the real adapter and the ONLY file
   excluded from coverage — a test parses it and fails if it grows any logic;
   `fake.py` replays a saved burst and is what every test above the seam runs
-  against, including faults (dropped frames, wrong ROI) that used to be
-  reproducible only on the rig.
+  against, including faults (dropped frames, wrong ROI, a fault status) that used
+  to be reproducible only on the rig. `grab()` returns a **`Grab`** — the SDK's raw
+  status, the OK status to compare it with, and an unevaluated frame builder that is
+  `None` unless the grab succeeded — because *what a non-OK status means* is a
+  decision, and decisions may not live in the coverage-excluded adapter.
+  `hsc/rig/worker.py` makes it and records which status ended the burst; an
+  earlier version decided in `imv.py` through a dict lookup the AST guard could
+  not see, and flattened every fault into "the burst just ended".
 - **`hsc/rig/`** — the service: one camera worker, piston pipeline jobs with
   phases and cancellation, the single-controller lease, the event bus and the
   SQLite store. Imports no web framework (asserted by `tests/test_layering.py`)
-  so the whole pipeline is testable without a server.
+  so the whole pipeline is testable without a server. Three rules here were each
+  paid for once: `store.add_run` **merges** with `COALESCE` (the importer re-scans
+  at every start and knows none of the capture-side columns — a blind upsert
+  erased them on the first restart after every run); `measure_dir` is the UNIQUE
+  key and **both** writers `resolve()` it (else `--data-root .` and the default
+  absolute root duplicate every run); and `JobManager.close` **refuses to close
+  the device** while a job is still alive, returning their ids instead — a
+  cancelled burst still has ~18 000 BMPs to write, so outliving the join is
+  routine, and closing under a live SDK call is what the next process cannot
+  recover from.
 - **`hsc/api/`** — FastAPI over `hsc/rig/`: REST, `/ws/events` (JSON) and
   `/ws/preview` (binary JPEG), and the `RuntimeError` -> error-code mapping
   that lets the UI show the lighting numbers next to a failed capture.
@@ -299,11 +314,19 @@ and `run_gui.py` were deleted once the rig service replaced their backend. **Git
 the reference for all of it** — the dialogs in particular are the starting point for the
 React port. What went with them, so nobody hunts for a caller that no longer exists:
 
-- **Live preview, Monitor mode, and the capture→measure→video chaining.** The service
-  publishes `preview` events but nothing grabs continuously yet; `hsc/monitor.py` and
-  `hsc/frame_writer.py` are kept and tested but have no driver. Chaining now lives in
-  `hsc/rig/jobs.py`, for the piston pipeline only.
-- **Interactive calibration and reference drawing.** The non-interactive paths survive:
+- **Live preview, Monitor mode, and the capture→measure→video chaining.** `/ws/preview`
+  CONSUMES bus events of kind `preview`, but **nothing publishes them** — both references
+  to that kind in `hsc/api/` are consumers (`ws_preview.py` sends them, `ws_events.py`
+  filters them out), so the socket is a working sink waiting for a continuous grab loop to
+  feed it. Do not go looking for the publisher; it has to be written. `hsc/monitor.py` and
+  `hsc/frame_writer.py` are likewise kept and tested but have no driver. Chaining now
+  lives in `hsc/rig/jobs.py`, for the piston pipeline only.
+- **Interactive calibration and reference drawing.** One stale pointer is knowingly left
+  behind: `hsc/calibrate_scale.py`'s module docstring still sends the reader to
+  `calibrate_ui.py` for interactive use. It is an analysis module, validated against real
+  rig data from 4 U to 40 U, and this branch modified none of them — the wrong comment is
+  cheaper than the first such edit. Fix it in a commit that touches nothing else.
+  The non-interactive paths survive:
   `uv run python -m hsc.calibrate_scale <still> --ref-mm 5 --roi1 ... --roi2 ...`,
   `auto_calibrate_image`, `measure_block_size`, and `set_reference_from_image/_folder`.
 - **`--selftest`** and the frozen one-folder Windows build. `packaging/HighSpeedCamera.spec`
@@ -346,8 +369,14 @@ All user output lives under `data\` (gitignored), via `data_root()`:
   nozzle reference.
 - `data\rig.db` — the service's SQLite run index (`hsc/rig/store.py`), created by
   `hsc.api.__main__.build()` under `--data-root` and filled from `data\measure\` on
-  startup by `hsc.rig.importer`. It is an index of folders that already exist, so
-  deleting it loses nothing a restart cannot rebuild.
+  startup by `hsc.rig.importer`. Mostly an index of folders that already exist — but
+  **not entirely**: `source_dir`, `injection_dir`, `exposure_us`, `measured_count`,
+  `truncated` and `dropped` are written only by the pipeline and cannot be recovered from
+  a measure folder, so deleting the file loses them for every past run. That is also why
+  `add_run` merges instead of overwriting (see `hsc/rig/store.py`) — the startup rescan
+  used to erase exactly those columns. There is **no schema migration**: the columns are
+  created by `CREATE TABLE IF NOT EXISTS`, so a `rig.db` made by an older build of this
+  branch must be deleted rather than upgraded.
 
 **Run label.** The optional run label (the capture job's `label` param) is appended to
 every run folder — `<timestamp>_<aspect>_<label>`, `piston_…_<label>`, `monitor_…_<label>` — and
@@ -486,13 +515,15 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (395: import smoke, monitor engine/replay, frame writer,
+- Tests: `uv run python -m pytest` (426: import smoke, monitor engine/replay, frame writer,
   BMP row order, smart save, run-folder/report naming, synthetic wedge, edge-detection V2
   (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed (synthetic strokes with
   exact ground truth), calibration load, vendor layout, data root, plus the service layers:
   hardware seam / fake camera, rig store, importer, lease, events, worker, jobs, the API
   routes and both WebSockets, and the layering guard). No camera and no server are needed —
-  nothing binds a port. One skip is expected (symlinks need privileges on Windows).
+  nothing binds a port. One skip is expected (symlinks need privileges on Windows); a
+  second appears under `--cov`, because the erf-edge budget test measures wall clock and
+  refuses to judge a traced run.
   Compile check:
   `uv run python -m py_compile hsc/*.py hsc/hardware/*.py hsc/rig/*.py hsc/api/*.py benchmark/*.py`.
 - **Coverage gate** for the service layers (run it before merging anything under
@@ -505,10 +536,14 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   and that exclusion is only honest because `tests/hardware/test_imv_has_no_logic.py`
   parses the file and fails if it grows any branching or computation. Fix an uncovered
   line by adding the test, never by widening the omit list. `tests/test_layering.py`
-  is the other half: it parses every `hsc/rig/` module's imports (7 today) and fails on
-  fastapi/starlette/uvicorn/`hsc.api`, and sweeps the whole analysis layer — everything
-  under `hsc/` except the three service packages, 16 modules today, recursively, so a new
-  analysis subpackage is guarded without editing that file — for imports of
+  is the other half: it parses every `hsc/rig/` **and `hsc/hardware/`** module's imports
+  (11 today) and fails on
+  fastapi/starlette/uvicorn/`hsc.api` — the hardware seam was in neither rule until
+  2026-08-17, being exempt from the analysis sweep as a service package — and sweeps the
+  whole analysis layer — everything
+  under `hsc/` except the three service packages, `EXPECTED_ANALYSIS`, 16 modules today,
+  recursively (proved by `test_the_sweep_is_recursive` over a temp tree, since every
+  analysis module happens to sit at the top level now) — for imports of
   `hsc.rig` / `hsc.api`. Matching is by **prefix**: the real
   form of the violation is `from hsc.api.app import create_app`, which an equality test
   would miss, so `violations()` treats a forbidden name as matched by the package and
