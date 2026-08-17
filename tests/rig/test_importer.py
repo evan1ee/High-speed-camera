@@ -2,7 +2,7 @@
 """Existing run folders import without translation: hsc.summary already parses
 exactly the summary block the store keeps."""
 from hsc.rig.importer import import_measure_root
-from hsc.rig.store import RunStore
+from hsc.rig.store import RunRecord, RunStore
 
 CSV = """frame,time_ms,x_px,distance_px,distance_mm,speed_mm_s,speed_m_s,k,n_points,rms_px,coverage,at_border,stable
 frame_000001.bmp,0.000,117.0,0.000,0.0000,0.00,0.0000,-0.02,50,0.30,1.000,no,yes
@@ -71,6 +71,33 @@ def test_is_idempotent(tmp_path):
     second = import_measure_root(root, store)
     assert second.imported == 1
     assert len(store.list_runs()) == 1
+
+
+def test_the_startup_rescan_keeps_what_only_the_pipeline_knew(tmp_path):
+    """import_measure_root runs from __main__.build at EVERY start, and a
+    measure folder cannot tell it which burst the run came from, what exposure
+    was used, or how many frames were measured. Re-importing must therefore
+    leave those columns alone -- they were lost on the first restart after
+    every run."""
+    root = tmp_path / "measure"
+    folder = _run_folder(root, "piston_2026-08-14-14-28-09_320x120_IN37-30U")
+    store = RunStore(tmp_path / "rig.db")
+    run_id = store.add_run(RunRecord(
+        kind="piston", captured_at="2026-08-14T14:28:09",
+        measure_dir=str(folder), label="IN37-30U",
+        source_dir=r"data\captures\piston_x",
+        injection_dir=r"data\injection images\piston_x",
+        exposure_us=500.0, measured_count=268))
+
+    assert import_measure_root(root, store).imported == 1
+
+    run = store.get_run(run_id)
+    assert run.source_dir == r"data\captures\piston_x"
+    assert run.injection_dir == r"data\injection images\piston_x"
+    assert run.exposure_us == 500.0
+    assert run.measured_count == 268
+    assert run.stroke_mm == 10.254        # and the folder's own numbers land
+    assert len(store.list_runs()) == 1     # still one row, not a duplicate
 
 
 def test_folder_without_a_csv_is_skipped_with_a_reason(tmp_path):

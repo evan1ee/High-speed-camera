@@ -8,7 +8,8 @@ writes, which is why importing the existing folders needs no translation --
 ``hsc.summary.read_run`` already parses exactly these fields.
 
 ``measure_dir`` is UNIQUE and inserts upsert on it, because the importer
-re-scans on every start and a run must not appear twice.
+re-scans on every start and a run must not appear twice. The upsert MERGES
+(see ``add_run``): a writer that does not know a column must not erase it.
 """
 
 import sqlite3
@@ -92,9 +93,32 @@ class RunStore:
             conn.close()
 
     def add_run(self, record):
+        """Insert *record*, or merge it into the row that already holds its
+        ``measure_dir``.
+
+        The merge is COALESCE'd, never blind. Two writers fill this table and
+        they know different things: the pipeline records the capture settings it
+        used (``source_dir``, ``injection_dir``, ``exposure_us``,
+        ``measured_count``, ``truncated``, ``dropped``), while the importer can
+        only read a finished measure FOLDER and leaves every one of those None.
+        ``import_measure_root`` runs from ``hsc.api.__main__.build`` at every
+        start, so a plain ``SET col = excluded.col`` erased those columns on the
+        first restart after each run -- unconditional, silent data loss.
+
+        The rule lives here rather than in a per-writer column list because it
+        is a property of the table, not of a caller: it holds in both
+        directions (the pipeline's own ``unstable_frames`` is None when the CSV
+        cannot be read, and must not erase the importer's), and a new writer
+        gets it without having to know.
+
+        The accepted consequence: a column can never be reset to NULL by a later
+        write. Nothing in this schema un-learns a value -- a rewrite only ever
+        carries the same number or a better one.
+        """
         payload = {name: getattr(record, name) for name in _COLUMNS}
         placeholders = ", ".join(f":{name}" for name in _COLUMNS)
-        updates = ", ".join(f"{name}=excluded.{name}" for name in _COLUMNS)
+        updates = ", ".join(f"{name}=COALESCE(excluded.{name}, runs.{name})"
+                            for name in _COLUMNS)
         with self._connect() as conn:
             cur = conn.execute(
                 f"INSERT INTO runs ({', '.join(_COLUMNS)}) "

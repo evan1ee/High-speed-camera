@@ -57,6 +57,37 @@ def test_measure_dir_is_unique_so_import_is_idempotent(tmp_path):
     assert runs[0].stroke_mm == pytest.approx(99.0)   # upsert, latest wins
 
 
+def test_a_writer_that_knows_less_does_not_erase_what_is_stored(tmp_path):
+    """The importer can only read a measure FOLDER, so it leaves every
+    capture-side column None -- and it re-scans at every start. A blind
+    ``SET col = excluded.col`` therefore wiped them on the first restart after
+    each run: unconditional, silent loss of the only record of where the run
+    came from."""
+    store = RunStore(tmp_path / "rig.db")
+    run_id = store.add_run(_record())
+    store.add_run(RunRecord(                      # what the importer can build
+        kind="piston", captured_at="2026-08-14T14:28:09",
+        measure_dir=r"data\measure\piston_x", label="IN37-30U",
+        stroke_mm=10.254))
+    got = store.get_run(run_id)
+    assert got.source_dir == r"data\captures\piston_x"
+    assert got.injection_dir == r"data\injection images\piston_x"
+    assert got.exposure_us == 500.0
+    assert got.measured_count == 268
+
+
+def test_a_later_writer_still_overwrites_the_values_it_does_know(tmp_path):
+    """The merge protects unknown columns only. A re-measurement that produces
+    a new number must still replace the old one, or the row would freeze at
+    whatever was written first."""
+    store = RunStore(tmp_path / "rig.db")
+    run_id = store.add_run(_record())
+    store.add_run(_record(stroke_mm=11.0, peak_speed_mm_s=None))
+    got = store.get_run(run_id)
+    assert got.stroke_mm == pytest.approx(11.0)     # known: replaced
+    assert got.peak_speed_mm_s == pytest.approx(194.0)   # unknown: kept
+
+
 def test_optional_metrics_may_be_missing(tmp_path):
     """Runs measured before the jet columns existed still import."""
     store = RunStore(tmp_path / "rig.db")
