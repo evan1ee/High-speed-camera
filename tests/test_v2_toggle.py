@@ -37,10 +37,12 @@ def test_edge_v2_disabled_is_a_noop():
         assert ma.BG_MODE == "pre-onset"
 
 
-def test_gui_checkbox_exists_and_defaults_off():
-    from hsc.gui.measurement import MeasurementMixin
-    import inspect
-    src = inspect.getsource(MeasurementMixin)
-    assert "edge_v2_var" in src
-    # The worker must route through the context manager.
-    assert "measure_angle.edge_v2(" in src
+def test_v2_flags_are_exactly_the_three_switched_together():
+    """``V2_FLAGS`` is the contract a caller reads to know what edge_v2()
+    changes; it must not drift from what the context manager actually flips."""
+    assert set(ma.V2_FLAGS) == {"EDGE_MODEL", "BG_MODE", "ANGLE_POLICY"}
+    before = {name: getattr(ma, name) for name in ma.V2_FLAGS}
+    with ma.edge_v2():
+        during = {name: getattr(ma, name) for name in ma.V2_FLAGS}
+    assert {n for n in ma.V2_FLAGS if before[n] != during[n]} == {
+        "EDGE_MODEL", "ANGLE_POLICY"}

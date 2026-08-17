@@ -1,0 +1,95 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""FastAPI application over the rig service.
+
+Thin on purpose: everything it exposes is implemented and tested in
+``hsc/rig/``. This layer translates HTTP to those calls and exceptions to
+codes, and serves the built SPA when one is present so the rig works from a
+single process.
+"""
+
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from hsc.api.errors import ErrorTranslationMiddleware
+
+
+@dataclass
+class RigServices:
+    store: object
+    jobs: object
+    lease: object
+    bus: object
+    paths: object
+    spa_dir: Path | None = None
+    cors_origins: tuple = field(default_factory=tuple)
+
+
+def create_app(services):
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            # The camera's lifetime ends here. CameraWorker opens the device
+            # once and never closes it -- it cannot know when the process is
+            # finished with it -- so without this the handle is held until the
+            # process dies and the next one cannot open the camera.
+            # JobManager.close cancels and joins the jobs first, then closes.
+            # In a ``finally``, so a startup step added above the yield later
+            # cannot leak the device by failing.
+            services.jobs.close()
+
+    app = FastAPI(title="High Speed Camera Rig", lifespan=lifespan)
+    app.state.services = services
+
+    # Order matters: ``add_middleware`` prepends, so the error translator is
+    # added FIRST to end up INSIDE CORSMiddleware -- its response then travels
+    # back out through CORS and carries the origin header. See
+    # ErrorTranslationMiddleware for what the alternative costs.
+    app.add_middleware(ErrorTranslationMiddleware)
+    if services.cors_origins:
+        app.add_middleware(
+            CORSMiddleware, allow_origins=list(services.cors_origins),
+            allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+    @app.get("/api/health")
+    async def health():
+        return {"status": "ok"}
+
+    @app.get("/api/camera/status")
+    async def camera_status():
+        return {"lease_holder": services.lease.holder}
+
+    # Sync handlers on purpose: the store is blocking sqlite, and FastAPI runs
+    # a plain ``def`` in the threadpool instead of stalling the event loop that
+    # also serves the event stream.
+    @app.get("/api/settings")
+    def get_settings():
+        return services.store.get_settings()
+
+    @app.put("/api/settings")
+    def put_settings(values: dict):
+        for key, value in values.items():
+            services.store.set_setting(key, value)
+        return services.store.get_settings()
+
+    from hsc.api import routes_control, routes_runs, ws_events, ws_preview
+    routes_runs.register(app, services)
+    routes_control.register(app, services)
+    ws_events.register(app, services)
+    ws_preview.register(app, services)
+
+    # Last: a mount at "/" matches every path, so it must come after the API
+    # routes. Absent or not yet built is normal -- the rig is usable from the
+    # API before anyone runs the frontend build.
+    if services.spa_dir is not None and Path(services.spa_dir).exists():
+        app.mount("/", StaticFiles(directory=str(services.spa_dir),
+                                   html=True), name="spa")
+    return app

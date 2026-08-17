@@ -8,13 +8,18 @@ A Windows toolkit for a **needle-free injector** test rig: a high-speed camera r
 high-pressure **water jet**, and the code (1) captures bursts, (2) extracts the short
 injection event from thousands of frames, and (3) measures the **spray angle** of the jet.
 
-Pipeline: **capture → find injection → measure angle**, chained automatically from the GUI's
-Capture button.
+Pipeline: **capture → find injection → measure angle**.
 
 A second, parallel pipeline measures the **piston speed**: the same camera watches the nozzle
 piston travel down the barrel while the dose is expelled (**capture piston → find injection
-piston → measure piston**, chained from the Capture Piston button), producing a
-distance/speed-vs-time record of the stroke.
+piston → measure piston**), producing a distance/speed-vs-time record of the stroke.
+
+**The rig is driven by the HTTP/WebSocket service in `hsc/api/` and by the module CLIs.**
+The Tkinter desktop app that used to chain these pipelines from buttons was retired on
+2026-08-17 (see *Retired: the Tk app* below) — nothing in this repo opens a window today.
+The piston pipeline is what the service drives end to end; the spray-angle pipeline, monitor
+mode and the calibration/reference dialogs are CLI-only or not yet driven at all, and the
+React UI that replaces the window arrives in a later slice.
 
 
 
@@ -38,107 +43,50 @@ distance/speed-vs-time record of the stroke.
 
 ## Module map
 
-- **`hsc/gui/`** — Tkinter GUI package, the entry point (`uv run python run_gui.py`;
-  `hsc/capture_gui.py` is a thin compatibility shim re-exporting `CaptureGui`/`main`).
-  `CaptureGui` (in `gui/app.py`) is assembled from one mixin per feature area:
-  `layout.py` (widgets), `capture.py` (preview/Capture UI side + the still-request
-  registry), `camera_worker.py` (the persistent camera thread: live preview AND burst
-  capture on the *same already-open camera*, so Capture is instant), `extraction.py`
-  (Find Injection), `measurement.py` (Measure + Measure Angle Block), `video.py`
-  (Make Video), `calibration.py` (Calibrate Scale / Auto Calibrate / Measure Block),
-  `reference.py` (Set Reference), `piston.py` (Capture Piston / Find Injection Piston /
-  Measure Piston), `config.py` (shared folders + `log_to_file`),
-  `selftest.py` (headless `--selftest`). After a capture it chains:
-  `CAPTURE_DONE → auto find-injection (in-memory) → auto measure → auto make slow-motion video`
-  (a `Total time (find injection -> measurement finished)` line is logged when the chained
-  measurement completes; the video runs after it, outside the timed span).
-  A **"Smart save"** checkbox (default OFF; variable + `smart_save` param in `capture.py`,
-  widget in `layout.py`) routes `camera_worker._do_capture` through a *detect-before-write*
-  branch: pass A computes the motion signal in RAM, `smart_save.plan_window` detects the
-  window, then it writes ONLY the `before..after` frames directly into
-  `data\injection images\<run>` (+ `injection_meta.json`, guarded rmdir of the empty
-  captures dir) and puts a ready `extract_result` in the CAPTURE_DONE payload — `capture.py`
-  `_on_capture_done` dispatches that straight to `_on_extract_done`, **short-circuiting** the
-  find-injection step (measure → video chain unchanged). No injection detected / checkbox off
-  ⇒ the full burst is saved to `data\captures\<run>` exactly as before.
-  A **"Start/Stop Monitoring"** toggle (`monitor.py` mixin + `camera_worker._do_monitor`)
-  runs continuous multi-injection capture: the grab loop feeds every frame to
-  `hsc.monitor.MonitorEngine` (online detection); a closed event with `discarded` set is only
-  logged (drip/mist trigger), otherwise it is written by a background
-  `hsc.frame_writer.EventWriter` directly to `data\injection images\monitor_<stamp>_<WxH>` and
-  its `make_result`-shaped payload is held by the UI until `MONITOR_SAVED` confirms the frames
-  are on disk, then queued in the `_monitor_chain` FIFO and pumped ONE event at a time through
-  the same `_on_extract_done` → measure chain (`_pump_monitor_chain`; **no video in monitor
-  mode** — `_monitor_chain_active` makes `_maybe_auto_video_after_measure` pump the next event
-  instead of `_make_video`). Stop mid-jet flushes and processes the
-  partial event; camera-owning buttons (`MONITOR_DISABLED_BUTTONS`) are disabled while
-  monitoring; the preview-queue `STOPPED` handler calls `_reset_monitor_ui()` (idempotent) so a
-  dying camera can't strand the toggle.
-  Threads talk to the UI via
-  `output_queue` / `preview_queue` drained by `after()` callbacks; each mixin declares a
-  `QUEUE_HANDLERS` dict (message kind → handler method) merged by
-  `app._collect_queue_handlers` — the recipe for adding a new feature module is in the
-  `gui/app.py` docstring. `_append_log` mirrors
-  every message (timestamped) to `data_root()/app.log` (the frozen build is windowed, so
-  that file is the only persistent record); `report_callback_exception` also logs uncaught
-  Tk callback tracebacks there. Buttons are grouped in three sections under the settings, in
-  this top-to-bottom order: **Initial Setup** (Cal. distance field; Calibrate Scale, Auto
-  Calibrate, Measure Block, Measure Angle Block, Set Reference), **Workflow** (the checkbox
-  block, wrapped 3-per-row — Smart save, Edge detection V2, Reference on preview, Auto pick
-  frames, Find piston V2 (off = the full per-frame fit; on = `scan_positions`),
-  Ref. lines on output (default ON; off = measure images get only the red rectangle,
-  no yellow tip line / blue centerline — `ref_lines` kwarg of `measure_folder`); Measure
-  from/to fields; Piston FPS field (fallback only, for folders with no recorded timing);
-  Find Injection, Measure, Make Video, Find Injection Piston, Measure Piston),
-  **Operation** (Stop Preview; Capture,
-  toggling to "Stop Capture" while a burst runs — no separate Stop button; Start Monitoring;
-  Capture Piston, toggling to "Stop Piston"; Open Last Folder).
-  The **piston chain** is `PISTON_CAPTURE_DONE → find injection piston → measure piston →
-  make video` (`gui/piston.py`, gated by `piston_chain`). The video is built from the
-  **measure** folder, not the injection folder, so it shows the fitted green line tracking the
-  piston — every wrong edge in this pipeline was caught by watching that, not by reading
-  numbers. `make_video.list_frames` keeps only the largest same-size group of images, because
-  a measure folder also holds the report plots and `VideoWriter` is fixed at one frame size. Its camera side is
-  `camera_worker._do_piston_capture`, kept as a SEPARATE loop from `_do_capture` on purpose:
-  the spray path's detect-before-write branch keys off the *jet's* motion signal, which says
-  nothing about the piston, so the two stay apart and the tuned spray burst cannot regress
-  (a test asserts `_do_capture` contains no piston logic). It keeps every frame and records
-  each one's `blockId`/`timeStamp` into `piston_capture.json` — the only honest basis for a
-  speed axis, and `blockId` gaps are how dropped frames get reported. Capture / Monitor /
-  Capture Piston refuse to start while another owns the camera, and the preview `STOPPED`
-  handler calls `_reset_piston_ui()` (idempotent) alongside `_reset_monitor_ui()`.
-  Fixed policies (former controls, now hardwired): `defer_save=True`, `no_save=False`,
-  `timestamp_dir=True` (capture params), injection padding = `PAD_BEFORE`/`PAD_AFTER`
-  (30/30, `gui/config.py`) everywhere before/after frames are needed.
+- **`hsc/hardware/`, `hsc/rig/`, `hsc/api/`** — the service that drives the rig; see their
+  own entries below. **There is no GUI package**: `hsc/gui/`, `hsc/capture_gui.py`,
+  `hsc/calibrate_ui.py`, `hsc/reference_ui.py` and `run_gui.py` were deleted on 2026-08-17.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
-  The **Capture ROI** selector (`gui/config.CAPTURE_ROIS`) picks the preset:
-  `320x240`/`320x120` → **1048/1798 fps**, measured on the rig 2026-08-12 with zero dropped
-  frames. `320x64` (2624 fps) was measured and then **withdrawn**: it crops into the barrel
-  (48 usable rows vs 79 at both remaining sizes) and the piston there is grey with a collar
-  that detaches mid-stroke, so no single edge rule held across a stroke. To use that rate,
-  re-aim the camera so the barrel FILLS the short frame, then restore the preset. The rate is bound by **row readout, not exposure** — 100 µs, 200 µs and
-  500 µs all give the identical rate at a given height, so keep the exposure up for contrast
-  and shorten the ROI for speed. A short ROI is the only way to resolve the injection's opening
-  transient (~2.9 ms: barely 3 frames at 1048 fps, ~7.6 at 2624 — below that the reported peak
-  speed is set by the smoothing window, not by the piston). **Cropping does not change mm/px**
-  (that is optics, not sensor rows), so the stored calibration stays valid at every ROI;
-  changing the selector restarts the preview, because `configure_camera` only programs
-  Width/Height when the grab thread starts.
+  **Capture ROI** — the rig-measured table, which lived in the deleted `gui/config.py` and now
+  survives only here. `320x240`/`320x120` → **1048/1798 fps**, measured on the rig 2026-08-12
+  with zero dropped frames. `320x64` (2624 fps) was measured and then **withdrawn**: it crops
+  into the barrel (48 usable rows vs 79 at both remaining sizes) and the piston there is grey
+  with a collar that detaches mid-stroke, so no single edge rule held across a stroke. To use
+  that rate, re-aim the camera so the barrel FILLS the short frame. The rate is bound by
+  **row readout, not exposure** — 100 µs, 200 µs and 500 µs all give the identical rate at a
+  given height, so keep the exposure up for contrast and shorten the ROI for speed. But cap it
+  at the frame period or the ROI drops below its rate: **950 µs at 320x240, 550 µs at
+  320x120**. Exceeding the cap costs BOTH speed and contrast — at 320x64 the default 500 µs
+  dropped the rate to 1830 fps AND lifted the piston from black (min 4) to grey (min 38),
+  leaving the detector nothing to lock onto; two rig runs on 2026-08-13 failed that way.
+  The API takes `width`/`height`/`exposure_us` straight from the caller and does **not**
+  enforce any of this — these are the numbers a UI should offer. A short ROI is the only way
+  to resolve the injection's opening transient (~2.9 ms: barely 3 frames at 1048 fps, ~7.6 at
+  2624 — below that the reported peak speed is set by the smoothing window, not by the
+  piston). **Cropping does not change mm/px** (that is optics, not sensor rows), so the stored
+  calibration stays valid at every ROI; `configure_camera` only programs Width/Height when the
+  grab thread starts, so the camera must be stopped before a new ROI takes effect.
 - **`hsc/injection_extract.py`** — temporal-motion detection of the injection. `extract_injection`
-  (disk) and `build_result` + `detect_bounds_with_presence` (used by the GUI's in-memory path).
+  (disk) and `build_result` + `detect_bounds_with_presence` (the in-memory path: detect, then write only the window).
   Motion-signal back-ends: `scan_with_cpp` → `compute_motion_signal_raw` → `compute_motion_signal`
   (PIL). Onset from temporal diff; end from a jet-presence signal (downsampled).
-- **`hsc/smart_save.py`** — pure planning for the GUI's "Smart save" detect-before-write path
-  (no SDK/Tk imports, unit-testable headless). `plan_window` wraps the unchanged
-  `detect_bounds_with_presence` and returns `(bounds, (copy_start, copy_end))` using
+- **`hsc/smart_save.py`** — pure planning for the *detect-before-write* capture path (the Tk
+  app's "Smart save"; no SDK imports, unit-testable headless). **No live caller today** — the
+  rig service writes the full piston burst — but it is the validated shape for a smart spray
+  capture, and its CLI still checks decisions against recorded bursts. `plan_window` wraps the
+  unchanged `detect_bounds_with_presence` and returns `(bounds, (copy_start, copy_end))` using
   `build_result`'s clamp math (`(None, None)` ⇒ no injection, caller does a full legacy save);
-  `make_result` builds the exact `build_result` key set so `_on_extract_done` consumes it
-  unchanged; `make_meta`/`write_meta` emit `injection_meta.json`. `replay(source_dir)` +
+  `make_result` builds the exact `build_result` key set, so a caller can hand its output
+  straight to whatever consumes a find-injection result; `make_meta`/`write_meta` emit
+  `injection_meta.json`. `replay(source_dir)` +
   CLI `uv run python -m hsc.smart_save "data\captures\<run>" --compare` re-run the decision on
   an existing burst and diff it against the legacy extractor (validation: should say IDENTICAL).
-- **`hsc/monitor.py`** — streaming (online) injection detection for Monitor mode.
+- **`hsc/monitor.py`** — streaming (online) injection detection for Monitor mode. **Kept
+  deliberately although nothing starts a session today** (its only driver was the Tk grab
+  loop): it is camera-free, tested, has a replay CLI, and encodes rig-earned detection
+  thresholds that would be expensive to rediscover. Same for `hsc/frame_writer.py`.
   `MonitorEngine(before, after, ...)` is a pure state machine (`armed → recording → padding →
   armed`) fed one frame at a time via `feed()` (returns a closed event dict or None) with a
   bounded pre-trigger ring buffer; `flush()` closes an in-flight event on Stop. Detection
@@ -202,8 +150,8 @@ distance/speed-vs-time record of the stroke.
   numbers. An earlier version excluded them *and* their Savitzky–Golay neighbours, which made
   the summary quote 108.5 mm/s while the curve plainly showed 131.1 (rig run
   2026-08-07-17-41-15); the operator reads the curve, so the two must never disagree.
-  `scan_positions` is the **Find piston V2** path (`extract_piston_event(fast=True)`, GUI
-  checkbox): same stroke window, ~30x faster. Three changes, all safe because every reported
+  `scan_positions` is the **Find piston V2** path (`extract_piston_event(fast=True)`, the
+  `fast` job param): same stroke window, ~30x faster. Three changes, all safe because every reported
   number is re-measured by `measure_piston` on the copied window with the full fit — (1) a
   **coarse pass at every `SCAN_STRIDE` (8) frame brackets the stroke and only that bracket
   (plus the head, which sets the rest baseline) is read densely**; (2) frames are read across
@@ -241,8 +189,7 @@ distance/speed-vs-time record of the stroke.
   ~1048 fps (measured 2026-08-07). Believing it would halve every reported speed. Speed is the
   Savitzky–Golay derivative (central difference when timestamps are unevenly spaced).
   CLI: `uv run python -m hsc.measure_piston "<folder>" [--fps N] [--mm-per-px X]`.
-- **`hsc/summary.py`** — descriptive statistics ACROSS measured runs (`gui/summary.py` =
-  the **Summary** button). It re-reads the summary block each run already wrote into its
+- **`hsc/summary.py`** — descriptive statistics ACROSS measured runs. It re-reads the summary block each run already wrote into its
   `*_speed.csv`, so a run folder needs no extra metadata to take part and old archives can be
   summarised retroactively. Reports n / mean / std / **cv_percent** / min / median / max for
   stroke, peak piston speed, duration, and peak jet speed + pressure; `cv_percent` is the one
@@ -251,12 +198,12 @@ distance/speed-vs-time record of the stroke.
   then the statistics block, then any folders that were skipped **with the reason** — quietly
   averaging fewer runs than the operator selected would be the worst outcome. Runs measured
   before the jet columns existed still contribute their stroke and speed (per-metric `n`).
-  Tk has no native multi-folder chooser, so `gui/summary.RunPicker` lists the measured runs
-  newest-first with extended selection, offering only folders that actually hold a run.
   CLI: `uv run python -m hsc.summary "data\measure\<run>" ... [--dest DIR]`.
 - **`hsc/piston_plot.py`** — tiny OpenCV XY line plotter (nice 1/2/5 ticks, grid, rotated y
-  label, NaN gaps break the curve). Deliberately not matplotlib: it would add tens of MB to the
-  frozen one-folder build for two plots.
+  label, NaN gaps break the curve). Deliberately not matplotlib: it would add tens of MB for
+  two plots. That mattered to the frozen one-folder build, which does not exist in this slice —
+  keep the rationale in view for when packaging returns rather than adding matplotlib now and
+  discovering the cost at build time.
 - **`hsc/frame_writer.py`** — `EventWriter`: background thread that writes a monitor event's
   BMP frames with cv2 (no SDK) + `injection_meta.json`, then reports
   `(dest_dir, ok, msg)` through a callback (→ `MONITOR_SAVED`); errors are reported, never
@@ -265,17 +212,18 @@ distance/speed-vs-time record of the stroke.
   returns the temporal motion signal as int32 stdout. Built statically via
   `native/build_injection_scan.bat` (MinGW g++; outputs to `vendor\bin\`). Optional:
   Python falls back if absent.
-- **`hsc/measure_angle.py`** — spray-angle pipeline (see below). `measure_folder` (GUI/CLI),
+- **`hsc/measure_angle.py`** — spray-angle pipeline (see below). `measure_folder` (service/CLI),
   `measure_single` (one image), `measure_frame` (one frame), plus modular steps.
 - **`hsc/make_video.py`** — builds a **slow-motion** playback video from an injection-images folder
-  (`make_video`; GUI "Make Video" button + CLI). Writes `slowmo.mp4` (mp4v, fallback MJPG
+  (`make_video`; CLI + the piston job's last phase). Writes `slowmo.mp4` (mp4v, fallback MJPG
   `.avi`) as a single file *directly inside the selected folder* at a low playback fps
   (`VIDEO_FPS`, default 15 → slow motion). Pure OpenCV, no SDK/camera needed.
-- **`hsc/calibrate_scale.py` / `hsc/calibrate_ui.py`** — spatial calibration (mm per pixel) from **two
+- **`hsc/calibrate_scale.py`** — spatial calibration (mm per pixel) from **two
   reference edges a known distance apart** via an **ROI workflow** (whole-frame auto-detect is
-  unreliable against the nozzle/reflection clutter, so the user boxes each edge). GUI "Calibrate
-  Scale" grabs a still to `data\measure\block\` (uses the "Cal. distance (mm)" field) and opens
-  `calibrate_ui.CalibrationDialog`: the user drags an ROI around each edge, clicks *Detect Edge*.
+  unreliable against the nozzle/reflection clutter, so the ROIs are supplied). The Tk dialog
+  that drew them (`calibrate_ui.CalibrationDialog`, deleted 2026-08-17, in git history for the
+  React port) grabbed a still to `data\measure\block\` and had the user box each edge and click
+  *Detect Edge*; today the ROIs come from the CLI or from `auto_rois`.
   `detect_edge_in_roi` scans each ROI (orientation from ROI aspect), finds the sub-pixel edge per
   scan line, fits a line by RANSAC→TLS (reusing `measure_angle` helpers), and `_line_gap` takes
   the perpendicular pixel distance; `mm_per_px = ref_mm / gap_px`. **Block polarity is
@@ -288,7 +236,8 @@ distance/speed-vs-time record of the stroke.
   `step`. `mode` "dark"/"bright"/"step" force the feature extremum. Draws both green lines + ROI boxes
   + gap connector + mm/px onto `*_scale.bmp` and writes `calibration.json` (to `settings\` at the repo root via `settings_path`).
   CLI for scripting/tests: `uv run python -m hsc.calibrate_scale still.bmp --ref-mm 5 --roi1 x0 y0 x1 y1
-  --roi2 x0 y0 x1 y1` (`--mode` defaults to `auto`). **"Auto Calibrate"** button skips the dialog:
+  --roi2 x0 y0 x1 y1` (`--mode` defaults to `auto`). **Auto-calibration** skips the ROI step
+  entirely:
   `auto_rois` finds the two block edges in the left `region_frac` (default 1/3, avoiding the
   right-side clutter) by **per-scanline two-edge voting** — `_two_edges_bright` (longest bright run
   per scan line → its two step boundaries, for the bright block) tried first, then `_two_lines`
@@ -296,19 +245,21 @@ distance/speed-vs-time record of the stroke.
   supporting scan lines wins and its `fit_mode` is returned. Robust to a tilted or locally-faint
   edge that a collapsed 1-D profile would wash out; refuses if two well-separated edges aren't
   present in most scan lines. Builds an ROI around each and runs the fit in the detected mode
-  (`auto_calibrate_image`). **"Measure Block"** button (`measure_block_size`) is the inverse: it
+  (`auto_calibrate_image`). **`measure_block_size`** is the inverse: it
   auto-detects a block's two edges and reports its size in **mm** using the stored calibration
   **without** overwriting `calibration.json` (writes a `*_measured.bmp`). `load_calibration()` is
-  the read API. NB: Auto Calibrate always *saves* a new calibration (assuming the entered
-  distance); Measure Block only *reads* it — calibrate on the known reference, then measure others.
+  the read API. NB: `auto_calibrate_image` always *saves* a new calibration (assuming the entered
+  distance); `measure_block_size` only *reads* it — calibrate on the known reference, then
+  measure others.
   `save_calibration` / `save_reference` back up any existing JSON to `<name>.bak` and write
   atomically (temp file + `os.replace`) so a crash mid-save can't corrupt the rig's calibration.
-- **`hsc/reference_lines.py` / `hsc/reference_ui.py`** — nozzle **reference lines**: the **tip edge**
+- **`hsc/reference_lines.py`** — nozzle **reference lines**: the **tip edge**
   (red) and the **centerline** (blue, through the tip midpoint, perpendicular, across the frame =
-  spray axis). GUI "Set Reference" **captures a nozzle still** (to `data\reference line\`, no jet in
-  view) and opens `reference_ui.ReferenceDialog`: the user **drags along the nozzle tip edge to
-  draw the thin red line directly** (auto-detect is unreliable on the reflective nozzle, so the
-  user places it) and the blue centerline is built live by `build_reference`. `save_check_image`
+  spray axis). The retired Tk flow captured a nozzle still (to `data\reference line\`, no jet in
+  view) and opened `reference_ui.ReferenceDialog`, where the user **dragged along the nozzle tip
+  edge to draw the thin red line directly** — auto-detect is unreliable on the reflective nozzle,
+  so a human placed it, and the React port must keep that. `build_reference` builds the blue
+  centerline from that line. `save_check_image`
   writes a **native-resolution** (1-px) overlay. A **mm-sized rectangle** reference is also added
   (`attach_rectangle`, needs the scale calibration): a thin red box centered on the centerline,
   with near/far vertical edges `RECT_NEAR_MM`/`RECT_FAR_MM` (1.0 / 6.51 mm) downstream of the red
@@ -316,24 +267,86 @@ distance/speed-vs-time record of the stroke.
   stored in `reference_lines.json` (`settings\` at the repo root) and overlaid on every measured frame by
   `measure_folder` when the frame size matches. (`detect_tip_in_roi` /
   `set_reference_from_image/_folder` = auto-detect helpers, kept for CLI.) `NOZZLE_SIDE` = right.
+- **`hsc/hardware/`** — the seam between rig code and the vendor SDK.
+  `device.py` is the protocol; `imv.py` is the real adapter and the ONLY file
+  excluded from coverage — a test parses it and fails if it grows any logic;
+  `fake.py` replays a saved burst and is what every test above the seam runs
+  against, including faults (dropped frames, wrong ROI, a fault status) that used
+  to be reproducible only on the rig. `grab()` returns a **`Grab`** — the SDK's raw
+  status, the OK status to compare it with, and an unevaluated frame builder that is
+  `None` unless the grab succeeded — because *what a non-OK status means* is a
+  decision, and decisions may not live in the coverage-excluded adapter.
+  `hsc/rig/worker.py` makes it and records which status ended the burst; an
+  earlier version decided in `imv.py` through a dict lookup the AST guard could
+  not see, and flattened every fault into "the burst just ended".
+- **`hsc/rig/`** — the service: one camera worker, piston pipeline jobs with
+  phases and cancellation, the single-controller lease, the event bus and the
+  SQLite store. Imports no web framework (asserted by `tests/test_layering.py`)
+  so the whole pipeline is testable without a server. Three rules here were each
+  paid for once: `store.add_run` **merges** with `COALESCE` (the importer re-scans
+  at every start and knows none of the capture-side columns — a blind upsert
+  erased them on the first restart after every run); `measure_dir` is the UNIQUE
+  key and **both** writers `resolve()` it (else `--data-root .` and the default
+  absolute root duplicate every run); and `JobManager.close` **refuses to close
+  the device** while a job is still alive, returning their ids instead — a
+  cancelled burst still has ~18 000 BMPs to write, so outliving the join is
+  routine, and closing under a live SDK call is what the next process cannot
+  recover from.
+- **`hsc/api/`** — FastAPI over `hsc/rig/`: REST, `/ws/events` (JSON) and
+  `/ws/preview` (binary JPEG), and the `RuntimeError` -> error-code mapping
+  that lets the UI show the lighting numbers next to a failed capture.
+  Run with `uv run python -m hsc.api --host <tailscale-ip>` (`__main__.py`:
+  `--host`, `--port`, `--data-root`, `--spa <built frontend dir>`, `--cors
+  <origin>` repeatable; `build()` is the wiring, split out so it is covered).
+  There is no application-level authentication — the tailnet is the security
+  boundary.
 - **`hsc/app_paths.py`** — `resource_root()` (bundled read-only files: SDK, `Runtime` DLLs,
   `bin/injection_scan.exe`) returns `vendor/`: `<root>/vendor` from source,
   `<sys._MEIPASS>/vendor` when frozen (PyInstaller). `data_root()` (user output:
   captures/injection images/measure, calibration/reference JSON) returns `<root>/data` from
   source (created on demand), the .exe folder when frozen. Used by `capture_image`
-  (SDK/Runtime), `injection_extract` (scan exe), `hsc/gui`.
+  (SDK/Runtime), `injection_extract` (scan exe), `hsc/rig` and `hsc/api`.
 
-## Packaging (Windows .exe)
+## Retired: the Tk app (2026-08-17)
 
-`packaging/HighSpeedCamera.spec` + `packaging/build_exe.bat` build a one-folder app via
-PyInstaller into `dist\HighSpeedCamera\` (see `docs/DISTRIBUTION.md`); run
-`packaging\build_exe.bat` from anywhere (it cds itself). The spec bundles the `vendor/` tree
-(`Runtime/x64`, the `Development/.../MVSDK` wrapper, `bin/injection_scan.exe`) **preserving the
-relative paths inside `vendor/`** — the vendor `IMVApi.py` loads `MVSDKmd.dll` by the relative
-path `../../../../../Runtime/x64/MVSDKmd.dll`, so that layout must be kept (in the built app it
-lands under `dist\HighSpeedCamera\_internal\vendor\...`). `uv run python run_gui.py --selftest
-"<injection folder>"` runs measure+video headless (writes `selftest.log`) to verify a build
-without a camera. `build/` and `dist/` are git-ignored.
+`hsc/gui/` (15 modules), `hsc/capture_gui.py`, `hsc/calibrate_ui.py`, `hsc/reference_ui.py`
+and `run_gui.py` were deleted once the rig service replaced their backend. **Git history is
+the reference for all of it** — the dialogs in particular are the starting point for the
+React port. What went with them, so nobody hunts for a caller that no longer exists:
+
+- **Live preview, Monitor mode, and the capture→measure→video chaining.** `/ws/preview`
+  CONSUMES bus events of kind `preview`, but **nothing publishes them** — both references
+  to that kind in `hsc/api/` are consumers (`ws_preview.py` sends them, `ws_events.py`
+  filters them out), so the socket is a working sink waiting for a continuous grab loop to
+  feed it. Do not go looking for the publisher; it has to be written. `hsc/monitor.py` and
+  `hsc/frame_writer.py` are likewise kept and tested but have no driver. Chaining now
+  lives in `hsc/rig/jobs.py`, for the piston pipeline only.
+- **Interactive calibration and reference drawing.** One stale pointer is knowingly left
+  behind: `hsc/calibrate_scale.py`'s module docstring still sends the reader to
+  `calibrate_ui.py` for interactive use. It is an analysis module, validated against real
+  rig data from 4 U to 40 U, and this branch modified none of them — the wrong comment is
+  cheaper than the first such edit. Fix it in a commit that touches nothing else.
+  The non-interactive paths survive:
+  `uv run python -m hsc.calibrate_scale <still> --ref-mm 5 --roi1 ... --roi2 ...`,
+  `auto_calibrate_image`, `measure_block_size`, and `set_reference_from_image/_folder`.
+- **`--selftest`** and the frozen one-folder Windows build. `packaging/HighSpeedCamera.spec`
+  + `packaging/build_exe.bat` were removed with it (their entry point was `run_gui.py`), and
+  PyInstaller left the dev dependencies. A frozen build returns when there is a web build to
+  bundle; `docs/DISTRIBUTION.md` covers running from source until then, and `hsc/app_paths.py`
+  keeps its `sys._MEIPASS` branch ready. When that build is written, the spec must again
+  bundle the `vendor/` tree (`Runtime/x64`, the `Development/.../MVSDK` wrapper,
+  `bin/injection_scan.exe`) **preserving the relative paths inside `vendor/`** — the vendor
+  `IMVApi.py` loads `MVSDKmd.dll` by the relative path
+  `../../../../../Runtime/x64/MVSDKmd.dll`, so that layout must be kept.
+- **Fixed capture policies** the GUI hardwired and the service now owns: `defer_save=True`,
+  `no_save=False`, `timestamp_dir=True`, and injection padding 30/30
+  (`PAD_BEFORE`/`PAD_AFTER`, now in `hsc/rig/jobs.py`).
+
+The **piston video is built from the `measure` folder, not the injection folder**, so it shows
+the fitted green line tracking the piston — every wrong edge in this pipeline was caught by
+watching that, not by reading numbers. Keep it that way. `make_video.list_frames` keeps only
+the largest same-size group of images, because a measure folder also holds the report plots
+and `VideoWriter` is fixed at one frame size.
 
 ## Data flow & folders
 
@@ -342,21 +355,30 @@ All user output lives under `data\` (gitignored), via `data_root()`:
 - `data\captures\<timestamp>_<aspect>\frame_000001.bmp …` — raw burst (one folder per run;
   timestamp format `yyyy-mm-dd-hh-mm-ss`, e.g. `2026-07-13-09-28-10_320x240`).
 - `data\injection images\<run>\…` — extracted injection window (`copy_start … copy_end`); the
-  "Make Video" button also writes `slowmo.mp4` here. With **Smart save** enabled and an
-  injection detected, the run folder is created **directly here** (with `injection_meta.json`)
-  and `data\captures\` receives nothing for that run; with Smart save off, or when no injection
-  is detected, the full burst still lands in `data\captures\` first as below. **Monitor mode**
-  events also land directly here as `monitor_<stamp>_<WxH>\` (with `injection_meta.json`),
-  one folder per detected injection — nothing in `data\captures\`.
-- `data\captures\piston_<timestamp>_<aspect>\…` — a **Capture Piston** burst (every frame
+  video step also writes `slowmo.mp4` here. A *detect-before-write* capture (`smart_save`)
+  would create the run folder **directly here** with `injection_meta.json` and leave
+  `data\captures\` empty for that run, as would a **Monitor mode** event
+  (`monitor_<stamp>_<WxH>\`); neither has a live driver today, so in practice the full burst
+  lands in `data\captures\` first as below.
+- `data\captures\piston_<timestamp>_<aspect>\…` — a **piston capture** burst (every frame
   kept, plus `piston_capture.json` with the per-frame camera timestamps). Its stroke window
   lands in `data\injection images\` like any other, with `piston_meta.json` alongside.
 - `data\measure\<run>\…` + `angles.csv` — annotated angle images and report. A piston run
   writes `piston_speed.csv` + `distance_time.png` + `speed_time.png` here instead.
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
+- `data\rig.db` — the service's SQLite run index (`hsc/rig/store.py`), created by
+  `hsc.api.__main__.build()` under `--data-root` and filled from `data\measure\` on
+  startup by `hsc.rig.importer`. Mostly an index of folders that already exist — but
+  **not entirely**: `source_dir`, `injection_dir`, `exposure_us`, `measured_count`,
+  `truncated` and `dropped` are written only by the pipeline and cannot be recovered from
+  a measure folder, so deleting the file loses them for every past run. That is also why
+  `add_run` merges instead of overwriting (see `hsc/rig/store.py`) — the startup rescan
+  used to erase exactly those columns. There is **no schema migration**: the columns are
+  created by `CREATE TABLE IF NOT EXISTS`, so a `rig.db` made by an older build of this
+  branch must be deleted rather than upgraded.
 
-**Run label.** The optional "Run label" field (Capture Settings, `run_label_var`) is appended to
+**Run label.** The optional run label (the capture job's `label` param) is appended to
 every run folder — `<timestamp>_<aspect>_<label>`, `piston_…_<label>`, `monitor_…_<label>` — and
 rides from there into the injection-images and measure folders for free, because `make_dest_dir`
 names them after the source. `capture_image.safe_label` strips the characters Windows forbids,
@@ -380,8 +402,8 @@ angle → visualization/report`, using OpenCV + NumPy + SciPy +
 scikit-learn. Key, hard-won design decisions (do not regress these without reason):
 
 - **Edge-detection V2 (opt-in, benchmark-gated; edge/policy defaults stay legacy).** Three
-  flags, flipped together by the `edge_v2()` context manager (the GUI's "Edge detection V2"
-  checkbox routes each measure run through it; `V2_FLAGS` is the set):
+  flags, flipped together by the `edge_v2()` context manager (`V2_FLAGS` is the set, and a
+  caller opts in by wrapping its measure run in the context manager):
   `EDGE_MODEL="erf"` adds a per-side blurred-step fit `I(y)=base+amp·Φ((y−μ)/σ)` per column
   as a THIRD candidate locus in the straightness contest (each side gets its own σ, so a
   skirted lower edge stops dragging its line; per-column confidence → `edge_conf_*`);
@@ -439,12 +461,11 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   also clipped to the reference rectangle's x-window (`_clip_lines_to_x`) for the jet-vs-rectangle
   check; the fit/angle is unaffected by the clip. When a rect is set, each frame also gets a
   **jet-in-rectangle verdict** (`jet_in_rect`: both edge lines inside the rect bbox over its
-  x-window ⇒ `OK`, else `NG`) — appended to the GUI per-frame log line
-  (`frame: 0.44 deg [High], OK`, via `gui/measurement._format_frame_lines`), the `in_rect`
+  x-window ⇒ `OK`, else `NG`) — the `in_rect`
   column of `angles.csv`, and `frame_in_rect` in the result dict (empty without a reference).
 - Frames are selected by **jet-frame index** (`start..end`, default 10–20), counted from the
   first frame containing a jet (padding skipped) — measures the steady jet, skips the burst.
-  The GUI's **"Auto pick frames"** checkbox (disables the from/to entries) instead measures
+  **`auto_pick=True`** (ignoring `start`/`end`) instead measures
   the FIRST run of `AUTO_PICK_COUNT` (10) file-consecutive frames whose jet is stable —
   span spread ≤ `AUTO_STABLE_TOL` of the window median AND angle spread ≤
   `AUTO_STABLE_ANGLE_TOL` (the angle check is essential: a fast jet reaches full span on its
@@ -468,9 +489,12 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## Conventions / gotchas
 
-- **Windows-only paths and APIs** (SDK, `os.startfile`). Python 3.13, managed by **uv**:
-  `uv sync` once creates `.venv/` from `pyproject.toml` + `uv.lock` (dev group includes
-  pytest + PyInstaller); prefix commands with `uv run`.
+- **Windows-only paths and APIs**: the camera SDK, and the backslash paths throughout. (The
+  last `os.startfile` call went with the GUI's "Open Last Folder" button — `git grep startfile`
+  now returns nothing, so nothing in `hsc/` shells out to the shell any more.) Python 3.13,
+  managed by **uv**: `uv sync` once creates `.venv/` from `pyproject.toml` + `uv.lock` (dev
+  group = pytest, pytest-cov, pytest-asyncio, httpx — **no PyInstaller**, it was dropped with
+  the Tk app); prefix commands with `uv run`.
 - Run module CLIs with `uv run python -m hsc.<module>` from the repo root; the package is never
   pip-installed (`tool.uv.package = false` — it runs in place).
 - Capture needs the IMV SDK + camera; **measurement does not** (pure cv2/scipy/sklearn on saved
@@ -483,18 +507,49 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   `make_video._read_bgr`) flip accordingly — regression 2026-07-10: monitor folders were
   measured upside down and the jet landed ~30 px off the reference line.
 - All three motion back-ends must produce the **same** signal — verify equality if you touch them.
-- Don't break the GUI contracts: `measure_folder(source, dest_base, start, end, progress)` and
-  `injection_extract.detect_bounds_with_presence(...)` / `build_result(...)` are called by
-  `hsc/gui/` (measurement.py, extraction.py, camera_worker.py).
+- Don't break the service contracts: `measure_folder(source, dest_base, start, end, progress)`,
+  `piston_track.extract_piston_event(...)`, `measure_piston.measure_folder(...)` and
+  `make_video.make_video(...)` are called by `hsc/rig/jobs.py`;
+  `injection_extract.detect_bounds_with_presence(...)` / `build_result(...)` are the
+  in-memory detection entry points.
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (175 tests: import smoke, GUI wiring/dispatch, monitor
-  engine/replay/wiring, frame writer, BMP row order, smart save, synthetic wedge,
-  edge-detection V2 (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed /
-  GUI wiring (synthetic strokes with exact ground truth), calibration load, vendor layout,
-  data root). Compile check:
-  `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.
+- Tests: `uv run python -m pytest` (426: import smoke, monitor engine/replay, frame writer,
+  BMP row order, smart save, run-folder/report naming, synthetic wedge, edge-detection V2
+  (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed (synthetic strokes with
+  exact ground truth), calibration load, vendor layout, data root, plus the service layers:
+  hardware seam / fake camera, rig store, importer, lease, events, worker, jobs, the API
+  routes and both WebSockets, and the layering guard). No camera and no server are needed —
+  nothing binds a port. One skip is expected (symlinks need privileges on Windows); a
+  second appears under `--cov`, because the erf-edge budget test measures wall clock and
+  refuses to judge a traced run.
+  Compile check:
+  `uv run python -m py_compile hsc/*.py hsc/hardware/*.py hsc/rig/*.py hsc/api/*.py benchmark/*.py`.
+- **Coverage gate** for the service layers (run it before merging anything under
+  `hsc/hardware/`, `hsc/rig/`, `hsc/api/`):
+  ```powershell
+  uv run python -m pytest --cov=hsc.hardware --cov=hsc.rig --cov=hsc.api --cov-report=term-missing --cov-fail-under=100
+  ```
+  100% is required. The single documented omission is `hsc/hardware/imv.py`
+  (`[tool.coverage.run] omit` in `pyproject.toml`), which cannot run without a camera —
+  and that exclusion is only honest because `tests/hardware/test_imv_has_no_logic.py`
+  parses the file and fails if it grows any branching or computation. Fix an uncovered
+  line by adding the test, never by widening the omit list. `tests/test_layering.py`
+  is the other half: it parses every `hsc/rig/` **and `hsc/hardware/`** module's imports
+  (11 today) and fails on
+  fastapi/starlette/uvicorn/`hsc.api` — the hardware seam was in neither rule until
+  2026-08-17, being exempt from the analysis sweep as a service package — and sweeps the
+  whole analysis layer — everything
+  under `hsc/` except the three service packages, `EXPECTED_ANALYSIS`, 16 modules today,
+  recursively (proved by `test_the_sweep_is_recursive` over a temp tree, since every
+  analysis module happens to sit at the top level now) — for imports of
+  `hsc.rig` / `hsc.api`. Matching is by **prefix**: the real
+  form of the violation is `from hsc.api.app import create_app`, which an equality test
+  would miss, so `violations()` treats a forbidden name as matched by the package and
+  anything below it — pinned by the guard's own probe tests.
+  `test_erf_mode_meets_perf_budget` skips itself under `--cov`
+  (tracing inflates wall clock — a timing assertion must not make the gate flaky).
 - Edge-detection accuracy: `uv run python -m benchmark.run_benchmark <tag>` writes
   `benchmark/results/<tag>.csv` (synthetic wedges with exact ground truth); compare against
   the committed `benchmark/baseline.csv` (legacy scores). Flip flags via
@@ -504,8 +559,8 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   saved frame (native 320×240 by default; raise `MEASURE_RENDER_SCALE` for a zoomable 960×720)
   and inspect that the green lines sit on the white jet edges.
   Reading an annotated `.bmp` requires converting to PNG first to view it.
-- The Tk GUI and live camera can't run in a headless/agent environment — verify logic and
-  saved-image output, and ask the user to confirm the GUI flow on the rig.
+- The live camera can't run in a headless/agent environment — verify logic and saved-image
+  output against `hsc/hardware/fake.py`, and ask the user to confirm the flow on the rig.
 
 ## Do / don't
 
