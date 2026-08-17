@@ -59,6 +59,18 @@ def test_detail_404_for_unknown_run(client):
     assert client.get("/api/runs/999").status_code == 404
 
 
+def test_the_run_payload_carries_the_captures_warnings(client, services,
+                                                       tmp_path):
+    """A truncated or lossy burst measures into a plausible, quietly low peak
+    speed. The only place an operator can still learn it is the run itself --
+    the capture_done event is long gone by the time anyone reads the result."""
+    run_id = _add(services, tmp_path, name="short", truncated=1, dropped=7)
+    payload = client.get(f"/api/runs/{run_id}").json()
+    assert payload["truncated"] == 1
+    assert payload["dropped"] == 7
+    assert client.get("/api/runs").json()[0]["truncated"] == 1
+
+
 def test_list_filters_by_kind_and_limit(client, services, tmp_path):
     _add(services, tmp_path, name="a")
     _add(services, tmp_path, name="b", kind="spray")

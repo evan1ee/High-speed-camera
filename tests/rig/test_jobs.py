@@ -200,6 +200,41 @@ def test_the_persisted_row_matches_what_the_importer_would_read(tmp_path):
     assert record.label == "IN37 30U"
 
 
+def test_the_capture_warnings_reach_the_run_row(tmp_path):
+    """A truncated or lossy burst is NOT self-evident downstream: elapsed is
+    measured to the break, so fps still reads ~1048 and detect_piston_bounds
+    scales off the travel it can see -- a shortened stroke with a plausible,
+    quietly low peak speed. The flag was a transient capture_done event a tab
+    connecting later never saw; the run row is where it has to live."""
+    measure_dir = tmp_path / "piston_2026-08-14-14-28-09_320x120"
+    measure_dir.mkdir()
+    job = Job(id="j", kind="piston_run", params=CFG)
+    job.result.update(truncated=True, dropped=2)
+    record = jobs_module._record_from({"dest_dir": str(measure_dir)}, job)
+    assert record.truncated == 1          # SQLite has no boolean
+    assert record.dropped == 2
+
+
+def test_a_burst_that_ran_to_time_says_so_rather_than_nothing(tmp_path):
+    measure_dir = tmp_path / "piston_2026-08-14-14-28-09_320x120"
+    measure_dir.mkdir()
+    job = Job(id="j", kind="piston_run", params=CFG)
+    job.result.update(truncated=False, dropped=0)
+    record = jobs_module._record_from({"dest_dir": str(measure_dir)}, job)
+    assert record.truncated == 0
+    assert record.dropped == 0
+
+
+def test_a_capture_job_records_the_warnings_on_the_job(tmp_path):
+    """End to end on the real seam: the 12-frame fixture cannot fill a 10 s
+    burst, so the camera stops delivering and the burst is truncated."""
+    manager, _bus = _manager(tmp_path)
+    job = manager.wait(manager.submit("capture", CFG), timeout=30)
+    assert job.state == "done"
+    assert job.result["truncated"] is True
+    assert job.result["dropped"] == 0
+
+
 def test_a_standalone_measure_row_invents_no_roi(tmp_path):
     """Re-analysis carries no capture settings, and an ROI built from two
     missing params would store the literal "NonexNone" as fact."""
@@ -211,6 +246,9 @@ def test_a_standalone_measure_row_invents_no_roi(tmp_path):
     assert record.roi is None
     assert record.captured_at == "2026-08-14T09:00:00"     # the caller's value
     assert record.unstable_frames is None                  # no CSV to read
+    # Nobody captured anything here, and "nobody looked" must not be stored as
+    # "the burst was fine".
+    assert record.truncated is None and record.dropped is None
 
 
 def test_an_unreadable_csv_does_not_lose_the_finished_measurement(tmp_path):

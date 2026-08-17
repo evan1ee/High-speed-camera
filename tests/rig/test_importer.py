@@ -76,9 +76,9 @@ def test_is_idempotent(tmp_path):
 def test_the_startup_rescan_keeps_what_only_the_pipeline_knew(tmp_path):
     """import_measure_root runs from __main__.build at EVERY start, and a
     measure folder cannot tell it which burst the run came from, what exposure
-    was used, or how many frames were measured. Re-importing must therefore
-    leave those columns alone -- they were lost on the first restart after
-    every run."""
+    was used, how many frames were measured, or whether the burst was
+    truncated. Re-importing must therefore leave those columns alone -- they
+    were lost on the first restart after every run."""
     root = tmp_path / "measure"
     folder = _run_folder(root, "piston_2026-08-14-14-28-09_320x120_IN37-30U")
     store = RunStore(tmp_path / "rig.db")
@@ -87,7 +87,7 @@ def test_the_startup_rescan_keeps_what_only_the_pipeline_knew(tmp_path):
         measure_dir=str(folder), label="IN37-30U",
         source_dir=r"data\captures\piston_x",
         injection_dir=r"data\injection images\piston_x",
-        exposure_us=500.0, measured_count=268))
+        exposure_us=500.0, measured_count=268, truncated=1, dropped=2))
 
     assert import_measure_root(root, store).imported == 1
 
@@ -96,6 +96,7 @@ def test_the_startup_rescan_keeps_what_only_the_pipeline_knew(tmp_path):
     assert run.injection_dir == r"data\injection images\piston_x"
     assert run.exposure_us == 500.0
     assert run.measured_count == 268
+    assert (run.truncated, run.dropped) == (1, 2)   # the burst's own warnings
     assert run.stroke_mm == 10.254        # and the folder's own numbers land
     assert len(store.list_runs()) == 1     # still one row, not a duplicate
 

@@ -28,7 +28,12 @@ CREATE TABLE IF NOT EXISTS runs (
     stroke_px REAL, stroke_mm REAL, duration_ms REAL,
     mean_speed_mm_s REAL, peak_speed_mm_s REAL,
     peak_jet_speed_m_s REAL, peak_jet_pressure_MPa REAL,
-    unstable_frames INTEGER, measured_count INTEGER
+    unstable_frames INTEGER, measured_count INTEGER,
+    -- The burst's own warnings, carried from BurstResult. 0/1 and a count,
+    -- because SQLite has no boolean. NULL means "nobody recorded it" (a
+    -- standalone re-measure, or a folder imported from disk), which is not
+    -- the same as "the burst was fine".
+    truncated INTEGER, dropped INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_captured_at ON runs (captured_at DESC);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,6 +66,12 @@ class RunRecord:
     peak_jet_pressure_MPa: float | None = None
     unstable_frames: int | None = None
     measured_count: int | None = None
+    #: The capture's warnings, from ``worker.BurstResult``. A truncated burst
+    #: is not self-evident downstream -- fps and the detected stroke stay
+    #: internally consistent, so the run reads as a plausible, quietly low peak
+    #: speed. Stored 0/1 (SQLite has no boolean); ``None`` = never recorded.
+    truncated: int | None = None
+    dropped: int | None = None
     id: int | None = None
 
 

@@ -210,6 +210,13 @@ class JobManager:
         if stopped():
             raise JobCancelled()
         job.result["output_dir"] = str(result.output_dir)
+        # The burst's warnings ride on the job from here, and into the run row
+        # in _record_from. Without that they existed only as a transient
+        # ``capture_done`` event -- a tab that connects later never sees it,
+        # and piston_meta.json is written by an analysis module this layer must
+        # not change. See BurstResult.truncated for why silence is dangerous.
+        job.result["truncated"] = result.truncated
+        job.result["dropped"] = result.dropped
         return result.output_dir
 
     def _find(self, job, source_dir):
@@ -302,7 +309,18 @@ def _record_from(result, job):
         peak_jet_speed_m_s=result.get("peak_jet_speed_m_s"),
         peak_jet_pressure_MPa=result.get("peak_jet_pressure_MPa"),
         unstable_frames=_unstable_frames(result),
-        measured_count=result.get("measured_count"))
+        measured_count=result.get("measured_count"),
+        truncated=_flag(job.result.get("truncated")),
+        dropped=job.result.get("dropped"))
+
+
+def _flag(value):
+    """A capture warning as SQLite stores it: 0/1, and ``None`` left alone.
+
+    ``None`` is not ``False`` here -- a standalone measure job never captured
+    anything, and "nobody looked" must not be read as "the burst was fine".
+    """
+    return None if value is None else int(value)
 
 
 def _roi(params, folder_roi):
