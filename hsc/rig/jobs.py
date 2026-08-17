@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hsc import make_video, measure_piston, piston_track
+from hsc import capture_image, make_video, measure_piston, piston_track
 from hsc.hardware.device import CaptureConfig
 from hsc.rig import importer
 from hsc.rig.store import RunRecord
@@ -305,16 +305,25 @@ def _record_from(result, job):
     folder at the next restart -- it upserts on ``measure_dir``, so any column
     it fills and this one leaves empty makes the run change on restart.
     """
-    name = Path(result["dest_dir"]).name
-    _kind, folder_stamp, folder_roi, _label = importer.parse_folder_name(name)
+    dest = Path(result["dest_dir"])
+    _kind, folder_stamp, folder_roi, _label = importer.parse_folder_name(
+        dest.name)
     return RunRecord(
         kind="piston",
         # The run folder carries the capture's timestamp, and it is what the
         # importer will read. An empty string here would sort the run the
         # operator just made to the bottom of a `captured_at DESC` list.
         captured_at=folder_stamp or str(job.params.get("captured_at", "")),
-        measure_dir=result["dest_dir"],
-        label=job.params.get("label") or None,
+        # Resolved, because measure_dir is the table's UNIQUE key and the
+        # importer resolves too. Launched once with --data-root . and once with
+        # the default absolute root, the same folder would otherwise be two
+        # different strings and every run would DUPLICATE instead of upserting.
+        measure_dir=str(dest.resolve()),
+        # Sanitised, not raw: the folder name went through safe_label, which
+        # folds whitespace to '-', so 'IN37 30U' comes back as 'IN37-30U' at
+        # the next restart. Storing the raw form made the label -- and the
+        # exact-match list_runs(label=...) filter -- change on restart.
+        label=capture_image.safe_label(job.params.get("label", "")) or None,
         source_dir=job.result.get("output_dir"),
         injection_dir=job.result.get("injection_dir"),
         roi=_roi(job.params, folder_roi),

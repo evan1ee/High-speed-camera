@@ -1,6 +1,8 @@
 # tests/rig/test_importer.py
 """Existing run folders import without translation: hsc.summary already parses
 exactly the summary block the store keeps."""
+from pathlib import Path
+
 from hsc.rig.importer import import_measure_root
 from hsc.rig.store import RunRecord, RunStore
 
@@ -99,6 +101,25 @@ def test_the_startup_rescan_keeps_what_only_the_pipeline_knew(tmp_path):
     assert (run.truncated, run.dropped) == (1, 2)   # the burst's own warnings
     assert run.stroke_mm == 10.254        # and the folder's own numbers land
     assert len(store.list_runs()) == 1     # still one row, not a duplicate
+
+
+def test_a_relative_and_an_absolute_measure_root_are_one_run(tmp_path,
+                                                             monkeypatch):
+    """measure_dir is the store's UNIQUE key. Launched once with
+    ``--data-root .`` and once with the default absolute root, the same folder
+    spelled two ways would duplicate every run instead of upserting it."""
+    root = tmp_path / "measure"
+    _run_folder(root, "piston_2026-08-14-14-28-09_320x120_IN37-30U")
+    store = RunStore(tmp_path / "rig.db")
+    monkeypatch.chdir(tmp_path)
+
+    import_measure_root(Path("measure"), store)
+    import_measure_root(root, store)
+
+    runs = store.list_runs()
+    assert len(runs) == 1
+    assert runs[0].measure_dir == str(
+        root / "piston_2026-08-14-14-28-09_320x120_IN37-30U")
 
 
 def test_folder_without_a_csv_is_skipped_with_a_reason(tmp_path):

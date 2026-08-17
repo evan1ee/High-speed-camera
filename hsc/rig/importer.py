@@ -113,7 +113,12 @@ def import_measure_root(measure_root, store):
             continue
         kind, captured_at, roi, label = parse_folder_name(folder.name)
         store.add_run(RunRecord(
-            kind=kind, captured_at=captured_at or "", measure_dir=str(folder),
+            kind=kind, captured_at=captured_at or "",
+            # Resolved: measure_dir is the store's UNIQUE key, so a relative
+            # measure root (``--data-root .``) and the default absolute one
+            # would otherwise spell the same folder two ways and import every
+            # run twice. The pipeline writer resolves for the same reason.
+            measure_dir=str(folder.resolve()),
             label=label, roi=roi,
             fps=_to_float(raw.get("fps")),
             timebase=raw.get("timebase"),

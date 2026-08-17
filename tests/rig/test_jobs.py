@@ -197,7 +197,36 @@ def test_the_persisted_row_matches_what_the_importer_would_read(tmp_path):
     assert (record.barrel_mm, record.orifice_mm, record.density) == (
         6.0, 0.17, 1000.0)
     assert record.unstable_frames == 3
-    assert record.label == "IN37 30U"
+    # The SANITISED label, because that is what the folder name carries and
+    # therefore what the importer reads back. Storing the operator's raw
+    # 'IN37 30U' made the run rename itself to 'IN37-30U' at the next restart,
+    # and flipped the exact-match list_runs(label=...) filter with it.
+    assert record.label == "IN37-30U"
+
+
+def test_a_run_with_no_label_stores_none_rather_than_an_empty_string(tmp_path):
+    """`list_runs(label="")` must not become a way to find every unlabelled
+    run, and an empty label is an absent one."""
+    measure_dir = tmp_path / "piston_2026-08-14-14-28-09_320x120"
+    measure_dir.mkdir()
+    job = Job(id="j", kind="piston_run", params=dict(CFG, label="   "))
+    record = jobs_module._record_from({"dest_dir": str(measure_dir)}, job)
+    assert record.label is None
+
+
+def test_the_measure_dir_key_is_normalised(tmp_path, monkeypatch):
+    """measure_dir is the store's UNIQUE key. Spelled relatively once (the
+    service launched with --data-root .) and absolutely the next time, the
+    same folder becomes two rows instead of one upsert."""
+    measure_dir = tmp_path / "piston_2026-08-14-14-28-09_320x120"
+    measure_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    job = Job(id="j", kind="piston_run", params=CFG)
+    relative = jobs_module._record_from(
+        {"dest_dir": measure_dir.name}, job)
+    absolute = jobs_module._record_from(
+        {"dest_dir": str(measure_dir)}, job)
+    assert relative.measure_dir == absolute.measure_dir == str(measure_dir)
 
 
 def test_the_capture_warnings_reach_the_run_row(tmp_path):
