@@ -122,7 +122,9 @@ class JobManager:
         return self.get(job_id)
 
     def close(self, timeout=30):
-        """Stop everything and release the camera.
+        """Stop everything and release the camera. Returns the ids of the jobs
+        that were still running when it gave up waiting -- empty when the
+        device was closed cleanly.
 
         ``CameraWorker`` opens the device once and never closes it -- it cannot
         know when the process is finished with it, and closing per burst would
@@ -130,15 +132,35 @@ class JobManager:
         here. Jobs are cancelled and joined FIRST: closing the device while the
         grab loop still holds it is how an SDK is left in a state the next
         process cannot open.
+
+        And when the join times out the device is NOT closed anyway, which is
+        what this used to do. Exceeding the timeout is routine, not exotic:
+        cancelling breaks the GRAB loop only, and ``capture_piston`` then saves
+        every clone one file at a time -- a 10 s burst at 1798 fps is ~18 000
+        BMPs, and ``duration_s`` is not validated. Leaving the handle open
+        until the process exits costs the next process nothing it would not
+        also lose to a half-closed device; closing under a live SDK call is the
+        failure that needs a power cycle. Reported rather than raised: this
+        runs from the app's shutdown ``finally``, and an exception there would
+        bury whatever else went wrong.
         """
         with self._guard:
             events = list(self._cancels.values())
-            threads = list(self._threads.values())
+            threads = dict(self._threads)
         for event in events:
             event.set()
-        for thread in threads:
+        for thread in threads.values():
             thread.join(timeout)
+        alive = sorted(job_id for job_id, thread in threads.items()
+                       if thread.is_alive())
+        if alive:
+            self._bus.publish("log", text=(
+                f"The camera was NOT closed: job(s) {', '.join(alive)} are "
+                f"still running after {timeout}s. Closing the device while a "
+                f"job still holds it can leave the SDK unable to open it."))
+            return alive
         self._worker.close()
+        return []
 
     # -- internals ---------------------------------------------------------
     def _run(self, job):

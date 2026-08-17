@@ -352,6 +352,36 @@ def test_close_cancels_a_job_still_running(tmp_path):
     assert manager.get(job_id).state == "cancelled"
 
 
+def test_close_refuses_to_close_the_device_under_a_running_job(tmp_path):
+    """Cancelling breaks the GRAB loop only -- capture_piston then saves every
+    clone one file at a time, so a burst outliving the join is routine.
+    Closing the handle there is how the SDK is left in a state the next
+    process cannot open, so it must be reported and skipped, not done anyway.
+    """
+    cam = _GatedCamera(BURST)
+    manager, bus = _manager(tmp_path, camera=cam)
+    q = bus.subscribe()
+    job_id = manager.submit("piston_run", CFG)
+    assert cam.grabbing.wait(10)                  # held inside grab()
+
+    still_running = manager.close(timeout=0.1)
+
+    assert still_running == [job_id]
+    assert cam.closes == 0                        # the device was left alone
+    logged = [e.payload["text"] for e in _drain(q) if e.kind == "log"]
+    assert any("NOT closed" in text and job_id in text for text in logged)
+    cam.gate.set()                                # let the burst unwind
+    manager.wait(job_id, timeout=30)
+
+
+def test_close_reports_nothing_when_every_job_finished(tmp_path):
+    cam = _CountingCamera(BURST)
+    manager, _bus = _manager(tmp_path, camera=cam)
+    manager.wait(manager.submit("capture", CFG), timeout=30)
+    assert manager.close() == []
+    assert cam.closes == 1
+
+
 def test_close_without_a_capture_leaves_the_camera_alone(tmp_path):
     cam = _CountingCamera(BURST)
     manager, _bus = _manager(tmp_path, camera=cam)
