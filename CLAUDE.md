@@ -124,6 +124,18 @@ distance/speed-vs-time record of the stroke.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
+  **The camera is MONOCHROME — there is no colour mode, and asking for one is not a setting
+  that was missed.** `AH7040MU000` (the `M`), confirmed against the camera document, and
+  confirmed in the pixel data: captured frames carry no Bayer filter grid, only ~0.6% of
+  row/column fixed-pattern noise across the four pixel parities, where a colour-filter array
+  read as Mono8 would split them by 10–30%. The SDK's `IMVDefines` lists `gvspPixelRGB8` and
+  the Bayer formats because it covers the whole product line; this body would refuse them,
+  and `set_enum_feature` logs `Skip PixelFormat: not available` rather than failing loudly.
+  Mono is also the right sensor here: a CFA costs 2–3x sensitivity (and exposure is the one
+  knob that does NOT buy frame rate, see below), and demosaicing interpolates exactly the
+  edges the whole pipeline fits sub-pixel. Consequence for gel work: contrast must come from
+  **luminance**, not hue — a dye that is merely a different colour at similar brightness is
+  invisible to this camera.
   The **Capture ROI** selector (`gui/config.CAPTURE_ROIS`) picks the preset:
   `320x240`/`320x120` → **1048/1798 fps**, measured on the rig 2026-08-12 with zero dropped
   frames. `320x64` (2624 fps) was measured and then **withdrawn**: it crops into the barrel
