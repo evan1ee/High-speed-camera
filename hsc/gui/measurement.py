@@ -60,7 +60,8 @@ class MeasurementMixin:
         self.edge_v2_var = tk.BooleanVar(value=False)
         # Draw the yellow tip line + blue centerline on measure output images
         # (the red rectangle is always drawn when a reference is set).
-        self.ref_lines_var = tk.BooleanVar(value=True)
+        # Default off: the rectangle alone is the verdict the operator reads.
+        self.ref_lines_var = tk.BooleanVar(value=False)
 
         self.register_still_request(
             self.block_requested, "block", "BLOCK_CAPTURED", "BLOCK_ERROR",

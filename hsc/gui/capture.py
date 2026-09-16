@@ -72,7 +72,7 @@ class CaptureMixin:
         # The data root: captures\, injection images\, measure\ live under it.
         self.output_dir_var = tk.StringVar(value=str(ROOT))
         self.ext_var = tk.StringVar(value=".bmp")
-        self.show_ref_var = tk.BooleanVar(value=True)
+        self.show_ref_var = tk.BooleanVar(value=False)
         self.smart_save_var = tk.BooleanVar(value=False)
 
     def register_still_request(self, event, prefix, done_kind, error_kind,
