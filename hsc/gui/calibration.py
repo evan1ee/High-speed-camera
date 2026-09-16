@@ -33,7 +33,7 @@ class CalibrationMixin:
         self.measblock_requested = threading.Event()
         self.measblock_thread = None
 
-        self.ref_mm_var = tk.StringVar(value="10")
+        self.ref_mm_var = tk.StringVar(value="5")
 
         self.register_still_request(
             self.scale_requested, "scale", "SCALE_CAPTURED", "SCALE_ERROR",

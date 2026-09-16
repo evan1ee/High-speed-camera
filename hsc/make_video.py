@@ -36,10 +36,12 @@ def _read_bgr(path):
     info = injection_extract._bmp_info(path)
     if info is not None and info[3] == 8:
         import numpy as np
-        offset, width, height, _ = info
+        offset, width, height, _, bottom_up = info
         data = np.fromfile(path, dtype=np.uint8)
         if data.size >= offset + width * height:
             gray = data[offset : offset + width * height].reshape(height, width)
+            if bottom_up:
+                gray = np.ascontiguousarray(gray[::-1])
             return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     raise RuntimeError(f"Cannot read image frame: {path}")
 

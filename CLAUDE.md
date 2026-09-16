@@ -55,9 +55,18 @@ Capture button.
   `gui/app.py` docstring. `_append_log` mirrors
   every message (timestamped) to `data_root()/app.log` (the frozen build is windowed, so
   that file is the only persistent record); `report_callback_exception` also logs uncaught
-  Tk callback tracebacks there. Buttons: Stop Preview,
-  Capture, Stop, Start Monitoring, Find Injection, Measure, Measure Angle Block, Make Video,
-  Calibrate Scale, Auto Calibrate, Measure Block, Set Reference, Open Last Folder.
+  Tk callback tracebacks there. Buttons are grouped in three sections under the settings, in
+  this top-to-bottom order: **Initial Setup** (Cal. distance field; Calibrate Scale, Auto
+  Calibrate, Measure Block, Measure Angle Block, Set Reference), **Workflow** (the checkbox
+  block, wrapped 3-per-row — Smart save, Edge detection V2, Reference on preview, Auto pick
+  frames, Ref. lines on output (default ON; off = measure images get only the red rectangle,
+  no yellow tip line / blue centerline — `ref_lines` kwarg of `measure_folder`); Measure
+  from/to fields; Find Injection, Measure, Make Video), **Operation** (Stop Preview; Capture,
+  toggling to "Stop Capture" while a burst runs — no separate Stop button; Start Monitoring;
+  Open Last Folder).
+  Fixed policies (former controls, now hardwired): `defer_save=True`, `no_save=False`,
+  `timestamp_dir=True` (capture params), injection padding = `PAD_BEFORE`/`PAD_AFTER`
+  (30/30, `gui/config.py`) everywhere before/after frames are needed.
 - **`hsc/capture_image.py`** — IMV SDK access + capture logic (`capture_burst`, `configure_camera`,
   `make_run_output_dir`, `ASPECT_PRESETS`). Standalone CLI too. Loads the SDK from
   `vendor/Development/Samples/Python/IMV/MVSDK` and DLLs from `vendor/Runtime/x64`.
@@ -172,7 +181,8 @@ without a camera. `build/` and `dist/` are git-ignored.
 
 All user output lives under `data\` (gitignored), via `data_root()`:
 
-- `data\captures\<timestamp>_<aspect>\frame_000001.bmp …` — raw burst (one folder per run).
+- `data\captures\<timestamp>_<aspect>\frame_000001.bmp …` — raw burst (one folder per run;
+  timestamp format `yyyy-mm-dd-hh-mm-ss`, e.g. `2026-07-13-09-28-10_320x240`).
 - `data\injection images\<run>\…` — extracted injection window (`copy_start … copy_end`); the
   "Make Video" button also writes `slowmo.mp4` here. With **Smart save** enabled and an
   injection detected, the run folder is created **directly here** (with `injection_meta.json`)
@@ -184,8 +194,8 @@ All user output lives under `data\` (gitignored), via `data_root()`:
 - `data\calibration.json` / `data\reference_lines.json` — the saved scale calibration and
   nozzle reference.
 
-`make_dest_dir` adds an `_HHMMSS` suffix if a destination folder already exists, so re-runs
-don't overwrite. The `data\captures\` contents change between sessions (the user
+`make_dest_dir` adds a `_2`, `_3`, … counter suffix if a destination folder already exists,
+so re-runs (and monitor events closing within the same second) don't overwrite. The `data\captures\` contents change between sessions (the user
 captures/cleans); don't assume a specific run folder exists — glob for it.
 
 ## hsc/measure_angle.py pipeline (canonical)
@@ -253,7 +263,11 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
   the image, `angles.csv`, mean/std/confidence. With no reference set it falls back to the
   edge-to-edge spray angle `|atan(k_up) − atan(k_lo)|` (`spray_angle`). The green edge lines are
   also clipped to the reference rectangle's x-window (`_clip_lines_to_x`) for the jet-vs-rectangle
-  check; the fit/angle is unaffected by the clip.
+  check; the fit/angle is unaffected by the clip. When a rect is set, each frame also gets a
+  **jet-in-rectangle verdict** (`jet_in_rect`: both edge lines inside the rect bbox over its
+  x-window ⇒ `OK`, else `NG`) — appended to the GUI per-frame log line
+  (`frame: 0.44 deg [High], OK`, via `gui/measurement._format_frame_lines`), the `in_rect`
+  column of `angles.csv`, and `frame_in_rect` in the result dict (empty without a reference).
 - Frames are selected by **jet-frame index** (`start..end`, default 10–20), counted from the
   first frame containing a jet (padding skipped) — measures the steady jet, skips the burst.
   The GUI's **"Auto pick frames"** checkbox (disables the from/to entries) instead measures
@@ -288,7 +302,12 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 - Capture needs the IMV SDK + camera; **measurement does not** (pure cv2/scipy/sklearn on saved
   images), so you can iterate on `hsc/injection_extract.py` / `hsc/measure_angle.py` without hardware.
 - BMP frames here are uncompressed 8-bit, often read fast via `injection_extract._bmp_info`
-  (header parse) + `np.fromfile` instead of PIL/cv2 decode.
+  (header parse) + `np.fromfile` instead of PIL/cv2 decode. **Row order matters**: the IMV SDK
+  saves top-down BMPs (biHeight < 0) but `cv2.imwrite` (frame_writer/EventWriter, i.e. every
+  Monitor-mode folder) saves bottom-up (biHeight > 0). `_bmp_info` returns a `bottom_up` flag
+  and all raw readers (`load_gray`, `raw_downsample_getter`, `_read_raw_pixels`,
+  `make_video._read_bgr`) flip accordingly — regression 2026-07-10: monitor folders were
+  measured upside down and the jet landed ~30 px off the reference line.
 - All three motion back-ends must produce the **same** signal — verify equality if you touch them.
 - Don't break the GUI contracts: `measure_folder(source, dest_base, start, end, progress)` and
   `injection_extract.detect_bounds_with_presence(...)` / `build_result(...)` are called by
@@ -296,8 +315,8 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (104 tests: import smoke, GUI wiring/dispatch, monitor
-  engine/replay/wiring, frame writer, smart save, synthetic wedge,
+- Tests: `uv run python -m pytest` (123 tests: import smoke, GUI wiring/dispatch, monitor
+  engine/replay/wiring, frame writer, BMP row order, smart save, synthetic wedge,
   edge-detection V2 (erf/pre-onset/quality/pooled/toggle), calibration load, vendor layout,
   data root). Compile check:
   `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.

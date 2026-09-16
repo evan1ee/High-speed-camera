@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """Widget construction and logging plumbing for the main window.
 
-New feature buttons go into the ``actions`` row in :meth:`_build_layout`;
-new settings fields use :meth:`_label_entry` / :meth:`_label_combo`.
+New feature buttons go into one of the three button sections in
+:meth:`_build_layout` (Operation / Workflow / Initial Setup); new settings
+fields use :meth:`_label_entry` / :meth:`_label_combo`.
 """
 
 import tkinter as tk
@@ -36,8 +37,12 @@ class LayoutMixin:
         top.columnconfigure(1, weight=1, uniform="half")
         top.rowconfigure(0, weight=1)
 
-        controls = ttk.LabelFrame(top, text="Capture Settings", padding=12)
-        controls.grid(row=0, column=0, sticky="nsew")
+        # Left column: settings on top, then the three button sections.
+        left = ttk.Frame(top)
+        left.grid(row=0, column=0, sticky="nsew")
+
+        controls = ttk.LabelFrame(left, text="Capture Settings", padding=12)
+        controls.pack(fill=tk.X)
         controls.columnconfigure(1, weight=1)
         controls.columnconfigure(3, weight=1)
 
@@ -62,88 +67,88 @@ class LayoutMixin:
             row=3, column=3, sticky="ew", pady=(8, 0)
         )
 
-        checks = ttk.Frame(controls)
-        checks.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
-        # Two rows of checkboxes (row, column in the checks grid).
+        def section(title, columns):
+            frame = ttk.LabelFrame(left, text=title, padding=12)
+            frame.pack(fill=tk.X, pady=(12, 0))
+            for col in range(columns):
+                frame.columnconfigure(col, weight=1, uniform=title)
+            return frame
+
+        def grid_buttons(frame, buttons, columns, first_row=0):
+            for i, btn in enumerate(buttons):
+                row, col = divmod(i, columns)
+                btn.grid(row=first_row + row, column=col, sticky="ew",
+                         padx=(0 if col == 0 else 8, 0),
+                         pady=(0 if row == 0 and first_row == 0 else 8, 0))
+
+        # Initial Setup: calibration / reference, done once per rig setup.
+        setup = section("Initial Setup", 3)
+        self._label_entry(setup, "Cal. distance (mm)", self.ref_mm_var, 0, 0)
+        self.scale_button = ttk.Button(
+            setup, text="Calibrate Scale", command=self._calibrate_scale)
+        self.autoscale_button = ttk.Button(
+            setup, text="Auto Calibrate",
+            command=lambda: self._calibrate_scale(auto=True))
+        self.measblock_button = ttk.Button(
+            setup, text="Measure Block", command=self._measure_block_size)
+        self.block_button = ttk.Button(
+            setup, text="Measure Angle Block", command=self._measure_block)
+        self.reference_button = ttk.Button(
+            setup, text="Set Reference", command=self._set_reference)
+        grid_buttons(setup,
+                     (self.scale_button, self.autoscale_button,
+                      self.measblock_button, self.block_button,
+                      self.reference_button), 3, first_row=1)
+
+        # Workflow: the find -> measure -> video chain and its options.
+        workflow = section("Workflow", 4)
+        checks = ttk.Frame(workflow)
+        checks.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        # Checkboxes wrap to a second row (5 don't fit in one at the
+        # default window width).
         checkboxes = (
-            ("Defer save", self.defer_save_var, None),
             ("Smart save", self.smart_save_var, None),
-            ("Timestamp folder", self.timestamp_dir_var, None),
-            ("Test only, do not save", self.no_save_var, None),
             ("Edge detection V2", self.edge_v2_var, None),
             ("Reference on preview", self.show_ref_var,
              self._refresh_preview_reference),
             ("Auto pick frames", self.auto_pick_var, self._toggle_auto_pick),
+            ("Ref. lines on output", self.ref_lines_var, None),
         )
-        per_row = (len(checkboxes) + 1) // 2
         for i, (text, var, command) in enumerate(checkboxes):
-            row, col = divmod(i, per_row)
+            row, col = divmod(i, 3)
             kwargs = {"command": command} if command else {}
             ttk.Checkbutton(checks, text=text, variable=var, **kwargs).grid(
                 row=row, column=col, sticky="w",
-                padx=(0 if col == 0 else 16, 0), pady=(0 if row == 0 else 6, 0),
+                padx=(0 if col == 0 else 16, 0), pady=(0 if row == 0 else 4, 0),
             )
-
-        self._label_entry(controls, "Frames before injection", self.before_var, 5, 0)
-        self._label_entry(controls, "Frames after injection", self.after_var, 5, 2)
         self.measure_start_entry = self._label_entry(
-            controls, "Measure from (Nth)", self.measure_start_var, 6, 0)
+            workflow, "Measure from (Nth)", self.measure_start_var, 1, 0)
         self.measure_end_entry = self._label_entry(
-            controls, "Measure to (Nth)", self.measure_end_var, 6, 2)
-        self._label_entry(controls, "Cal. distance (mm)", self.ref_mm_var, 7, 0)
-
-        # Action buttons: a uniform grid filling the empty space at the
-        # bottom of the settings panel (left column, under the fields).
-        controls.rowconfigure(8, weight=1)
-        actions = ttk.Frame(controls)
-        actions.grid(row=8, column=0, columnspan=4, sticky="new", pady=(12, 0))
-        for col in range(4):
-            actions.columnconfigure(col, weight=1, uniform="btn")
-
-        self.preview_button = ttk.Button(actions, text="Stop Preview", command=self._toggle_preview)
-        self.run_button = ttk.Button(actions, text="Capture", command=self._run_capture)
-        self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_capture, state=tk.DISABLED)
-        self.monitor_button = ttk.Button(
-            actions, text="Start Monitoring", command=self._toggle_monitor
-        )
+            workflow, "Measure to (Nth)", self.measure_end_var, 1, 2)
         self.extract_button = ttk.Button(
-            actions, text="Find Injection", command=self._find_injection
-        )
+            workflow, text="Find Injection", command=self._find_injection)
         self.measure_button = ttk.Button(
-            actions, text="Measure", command=self._measure_injection
-        )
+            workflow, text="Measure", command=self._measure_injection)
         self.video_button = ttk.Button(
-            actions, text="Make Video", command=self._make_video
-        )
-        self.scale_button = ttk.Button(
-            actions, text="Calibrate Scale", command=self._calibrate_scale
-        )
-        self.autoscale_button = ttk.Button(
-            actions, text="Auto Calibrate",
-            command=lambda: self._calibrate_scale(auto=True),
-        )
-        self.measblock_button = ttk.Button(
-            actions, text="Measure Block", command=self._measure_block_size
-        )
-        self.block_button = ttk.Button(
-            actions, text="Measure Angle Block", command=self._measure_block
-        )
-        self.reference_button = ttk.Button(
-            actions, text="Set Reference", command=self._set_reference
-        )
-        self.open_button = ttk.Button(actions, text="Open Last Folder", command=self._open_last_folder)
+            workflow, text="Make Video", command=self._make_video)
+        grid_buttons(workflow,
+                     (self.extract_button, self.measure_button,
+                      self.video_button), 3, first_row=2)
 
-        buttons = (
-            self.preview_button, self.run_button, self.stop_button,
-            self.monitor_button,
-            self.extract_button, self.measure_button, self.video_button,
-            self.scale_button, self.autoscale_button, self.measblock_button,
-            self.block_button, self.reference_button, self.open_button,
-        )
-        for i, btn in enumerate(buttons):
-            row, col = divmod(i, 4)
-            btn.grid(row=row, column=col, sticky="ew",
-                     padx=(0 if col == 0 else 8, 0), pady=(0 if row == 0 else 8, 0))
+        # Operation: what the user touches every run.
+        operation = section("Operation", 4)
+        self.preview_button = ttk.Button(
+            operation, text="Stop Preview", command=self._toggle_preview)
+        # Capture toggles to "Stop Capture" while a burst runs (_run_capture).
+        self.run_button = ttk.Button(
+            operation, text="Capture", command=self._run_capture)
+        self.monitor_button = ttk.Button(
+            operation, text="Start Monitoring", command=self._toggle_monitor)
+        self.open_button = ttk.Button(
+            operation, text="Open Last Folder", command=self._open_last_folder)
+        grid_buttons(operation,
+                     (self.preview_button, self.run_button,
+                      self.monitor_button, self.open_button), 4)
 
         log_frame = ttk.LabelFrame(root, text="Output", padding=8)
         log_frame.pack(fill=tk.X)

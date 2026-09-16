@@ -18,7 +18,7 @@ from PIL import Image, ImageTk
 
 from hsc import capture_image
 from hsc import reference_lines
-from hsc.gui.config import ROOT
+from hsc.gui.config import PAD_AFTER, PAD_BEFORE, ROOT
 
 
 class CaptureMixin:
@@ -61,15 +61,11 @@ class CaptureMixin:
         self.aspect_var = tk.StringVar(value="320x240")
         self.exposure_var = tk.StringVar(value="500")
         self.camera_index_var = tk.StringVar(value="1")
-        self.output_dir_var = tk.StringVar(value=str(ROOT / "captures"))
+        # The data root: captures\, injection images\, measure\ live under it.
+        self.output_dir_var = tk.StringVar(value=str(ROOT))
         self.ext_var = tk.StringVar(value=".bmp")
         self.show_ref_var = tk.BooleanVar(value=True)
-        self.defer_save_var = tk.BooleanVar(value=True)
         self.smart_save_var = tk.BooleanVar(value=False)
-        self.timestamp_dir_var = tk.BooleanVar(value=True)
-        self.no_save_var = tk.BooleanVar(value=False)
-        self.before_var = tk.StringVar(value="30")
-        self.after_var = tk.StringVar(value="30")
 
     def register_still_request(self, event, prefix, done_kind, error_kind,
                                dest_dir, buttons):
@@ -127,25 +123,25 @@ class CaptureMixin:
     def _build_capture_params(self):
         duration, _, _ = self._validate_inputs()
         width, height = capture_image.ASPECT_PRESETS[self.aspect_var.get()]
-        try:
-            before = max(0, int(self.before_var.get()))
-            after = max(0, int(self.after_var.get()))
-        except ValueError:
-            before, after = 30, 30
         return SimpleNamespace(
             duration=duration,
-            no_save=self.no_save_var.get(),
-            defer_save=self.defer_save_var.get(),
+            # Fixed policy (former checkboxes): always capture-then-save
+            # (defer_save avoids dropped frames at high FPS), never test-only,
+            # always a fresh timestamp folder per run.
+            no_save=False,
+            defer_save=True,
             smart_save=self.smart_save_var.get(),
-            timestamp_dir=self.timestamp_dir_var.get(),
+            timestamp_dir=True,
             aspect=self.aspect_var.get(),
             width=width,
             height=height,
             ext=self.ext_var.get(),
             prefix="frame",
-            burst_dir=self.output_dir_var.get(),
-            before=before,
-            after=after,
+            # Bursts land in <data folder>\captures\<run> (the field holds
+            # the data root, not the captures folder itself).
+            burst_dir=str(Path(self.output_dir_var.get()) / "captures"),
+            before=PAD_BEFORE,
+            after=PAD_AFTER,
         )
 
     # ------------------------------------------------------------------
@@ -197,10 +193,13 @@ class CaptureMixin:
         self.preview_button.configure(text="Start Preview")
 
     # ------------------------------------------------------------------
-    # Capture button
+    # Capture button (toggles to "Stop Capture" while a burst is running)
     # ------------------------------------------------------------------
     def _run_capture(self):
         if self.capture_requested.is_set():
+            # Second click = abort; the button resets on CAPTURE_DONE/ERROR.
+            self.capture_abort.set()
+            self.status_var.set("Aborting capture...")
             return
 
         try:
@@ -212,8 +211,7 @@ class CaptureMixin:
         self.capture_params = params
         self.last_output_dir = None
         self.log_text.delete("1.0", tk.END)
-        self.run_button.configure(state=tk.DISABLED)
-        self.stop_button.configure(state=tk.NORMAL)
+        self.run_button.configure(text="Stop Capture")
 
         # Make sure the camera is open and grabbing; the worker picks up the
         # request on its next loop iteration and starts the burst immediately.
@@ -224,19 +222,11 @@ class CaptureMixin:
         self.capture_requested.set()
         self.status_var.set("Capturing...")
 
-    def _stop_capture(self):
-        if self.capture_requested.is_set():
-            self.capture_abort.set()
-            self.status_var.set("Aborting capture...")
-        else:
-            self._stop_preview()
-
     def _on_capture_done(self, payload):
         self.status_var.set("Done")
         info = payload if isinstance(payload, dict) else {"dir": payload}
         self.last_output_dir = Path(info["dir"])
-        self.run_button.configure(state=tk.NORMAL)
-        self.stop_button.configure(state=tk.DISABLED)
+        self.run_button.configure(state=tk.NORMAL, text="Capture")
         # Auto-find the injection right after a saved capture, then measure
         # the spray angle, then make the slow-motion video.
         if self.capture_params and self.capture_params.no_save:
@@ -263,8 +253,7 @@ class CaptureMixin:
     def _on_capture_error(self, payload):
         self.status_var.set(f"Error: {payload}")
         self._append_log(f"[Capture Error] {payload}\n")
-        self.run_button.configure(state=tk.NORMAL)
-        self.stop_button.configure(state=tk.DISABLED)
+        self.run_button.configure(state=tk.NORMAL, text="Capture")
         self._pipeline_t0 = None
 
     # ------------------------------------------------------------------
@@ -292,8 +281,7 @@ class CaptureMixin:
                     # If a capture was pending when the camera stopped, release it.
                     if self.capture_requested.is_set():
                         self.capture_requested.clear()
-                        self.run_button.configure(state=tk.NORMAL)
-                        self.stop_button.configure(state=tk.DISABLED)
+                        self.run_button.configure(state=tk.NORMAL, text="Capture")
                     # Release any other pending camera request so its button is
                     # not stranded disabled when the worker dies (e.g. the camera
                     # fails to enumerate after the operator clicked Calibrate).

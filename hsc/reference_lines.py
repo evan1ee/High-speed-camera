@@ -206,12 +206,16 @@ def attach_rectangle(ref, mm_per_px, nozzle_side=1,
     return ref
 
 
-def draw_reference(img_bgr, ref, scale=1, width=1):
-    """Draw the yellow tip-edge line, blue centerline, and (if set) the rectangle."""
+def draw_reference(img_bgr, ref, scale=1, width=1, lines=True):
+    """Draw the yellow tip-edge line, blue centerline, and (if set) the rectangle.
+
+    ``lines=False`` skips the yellow and blue lines (rectangle only) -- the
+    GUI's "Ref. lines on output" checkbox for cleaner measure images."""
     def pt(xy):
         return (int(round(xy[0] * scale)), int(round(xy[1] * scale)))
-    cv2.line(img_bgr, pt(ref["blue_a"]), pt(ref["blue_b"]), BLUE, width, cv2.LINE_AA)
-    cv2.line(img_bgr, pt(ref["nozzle_p0"]), pt(ref["nozzle_p1"]), YELLOW, width, cv2.LINE_AA)
+    if lines:
+        cv2.line(img_bgr, pt(ref["blue_a"]), pt(ref["blue_b"]), BLUE, width, cv2.LINE_AA)
+        cv2.line(img_bgr, pt(ref["nozzle_p0"]), pt(ref["nozzle_p1"]), YELLOW, width, cv2.LINE_AA)
     corners = ref.get("rect_corners")
     if corners:
         poly = np.array([pt(p) for p in corners], dtype=np.int32)

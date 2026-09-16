@@ -35,7 +35,11 @@ class CameraWorkerMixin:
             sdk = capture_image.load_sdk()
             device_list = capture_image.enum_devices(sdk)
             if device_list.nDevNum == 0:
-                self.preview_queue.put(("ERROR", "No camera found."))
+                self.preview_queue.put((
+                    "ERROR",
+                    "No camera found - check the USB cable, camera power, "
+                    "and that the camera driver is installed on this PC.",
+                ))
                 return
             if camera_index < 1 or camera_index > device_list.nDevNum:
                 self.preview_queue.put(("ERROR", f"Camera index must be 1..{device_list.nDevNum}"))
@@ -369,7 +373,9 @@ class CameraWorkerMixin:
         """Reserve the event's folder, queue the async write, and post the
         make_result-shaped payload the UI holds until MONITOR_SAVED."""
         h, w = event["frames"][0].shape
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        # Second-resolution stamp; make_dest_dir uniquifies if two events
+        # close within the same second.
+        stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         dest_dir = injection_extract.make_dest_dir(
             Path(f"monitor_{stamp}_{w}x{h}"), INJECTION_DIR)
         # Create the folder NOW (cheap, once per event) so the next event's
