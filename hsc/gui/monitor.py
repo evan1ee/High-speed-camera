@@ -33,7 +33,7 @@ class MonitorMixin:
     MONITOR_DISABLED_BUTTONS = (
         "run_button", "scale_button", "autoscale_button",
         "measblock_button", "block_button", "reference_button",
-        "piston_button",
+        "piston_button", "gel_button",
     )
 
     def _init_monitor_state(self):

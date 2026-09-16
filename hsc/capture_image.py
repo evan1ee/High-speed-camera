@@ -383,7 +383,11 @@ def make_run_output_dir(base_dir, args):
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     aspect = (args.aspect or "custom").replace(":", "x")
-    name = with_label(f"{timestamp}_{aspect}", getattr(args, "label", ""))
+    # Optional run kind marker, so a gel run is identifiable on disk the way a
+    # piston run is. Absent for a plain spray capture, which keeps its name.
+    prefix = getattr(args, "run_prefix", "") or ""
+    stem = f"{prefix}_{timestamp}_{aspect}" if prefix else f"{timestamp}_{aspect}"
+    name = with_label(stem, getattr(args, "label", ""))
     return (base_dir / name).resolve()
 
 

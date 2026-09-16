@@ -23,6 +23,7 @@ from hsc.gui.camera_worker import CameraWorkerMixin
 from hsc.gui.capture import CaptureMixin
 from hsc.gui.config import log_to_file
 from hsc.gui.extraction import ExtractionMixin
+from hsc.gui.gel import GelMixin
 from hsc.gui.layout import LayoutMixin
 from hsc.gui.measurement import MeasurementMixin
 from hsc.gui.monitor import MonitorMixin
@@ -40,6 +41,7 @@ class CaptureGui(
     MeasurementMixin,
     MonitorMixin,
     PistonMixin,
+    GelMixin,
     SummaryMixin,
     VideoMixin,
     CalibrationMixin,
@@ -71,6 +73,7 @@ class CaptureGui(
         self._init_capture_state()
         self._init_monitor_state()
         self._init_piston_state()
+        self._init_gel_state()
         self._init_extraction_state()
         self._init_measurement_state()
         self._init_video_state()

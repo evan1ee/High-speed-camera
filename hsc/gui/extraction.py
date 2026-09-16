@@ -25,7 +25,12 @@ class ExtractionMixin:
     def _init_extraction_state(self):
         self.extract_thread = None
 
-    def _find_injection(self, source=None):
+    def _find_injection(self, source=None, end_rule="presence"):
+        """Find the injection window in a burst folder.
+
+        ``end_rule`` reaches ``injection_extract.extract_injection``; the gel
+        chain passes ``"temporal"`` because its scene never clears.
+        """
         if self.extract_thread and self.extract_thread.is_alive():
             return
 
@@ -51,7 +56,7 @@ class ExtractionMixin:
 
         self.extract_thread = threading.Thread(
             target=self._extract_worker,
-            args=(Path(source), before, after),
+            args=(Path(source), before, after, end_rule),
             daemon=True,
         )
         self.extract_thread.start()
@@ -108,7 +113,7 @@ class ExtractionMixin:
             }
         )
 
-    def _extract_worker(self, source, before, after):
+    def _extract_worker(self, source, before, after, end_rule="presence"):
         last = [0]
 
         def progress(done, total):
@@ -124,6 +129,7 @@ class ExtractionMixin:
                 before=before,
                 after=after,
                 progress=progress,
+                end_rule=end_rule,
             )
             self.output_queue.put(("EXTRACT_DONE", result))
         except Exception as exc:
@@ -154,7 +160,11 @@ class ExtractionMixin:
         # find injection -> measure -> make slow-motion video. Measure runs on
         # its own thread; the video is chained once it finishes (MEASURE_DONE),
         # gated by auto_measure_pending which stays set until then.
-        if self.auto_measure_pending:
+        if self.gel_chain:
+            # Gel: no spray angle to measure inside a block -- go to the video.
+            self.gel_chain = False
+            self._make_video(self.last_injection_dir)
+        elif self.auto_measure_pending:
             self._measure_injection(self.last_injection_dir)
 
     def _on_extract_error(self, payload):
@@ -162,4 +172,5 @@ class ExtractionMixin:
         self._append_log(f"[Injection Error] {payload}\n")
         self.extract_button.configure(state=tk.NORMAL)
         self.auto_measure_pending = False
+        self.gel_chain = False
         self._pipeline_t0 = None

@@ -314,13 +314,28 @@ def detect_bounds_with_presence(
     pre_gap=20,
     scan_cap=1500,
     residual_k=END_RESIDUAL_K,
+    end_rule="presence",
 ):
     """Find (start, end, peak) using the temporal signal for onset and a
     jet-region presence signal for the end (so a steady jet is not cut early).
 
     ``frame_getter(i)`` must return a 2-D int16 (downsampled) frame.
     Returns ``None`` if no clear injection is present.
+
+    ``end_rule`` selects how the end is found:
+
+    * ``"presence"`` (default) -- the jet is gone when presence inside the jet
+      mask settles back toward the pre-onset background. Right for a jet in
+      air, which clears.
+    * ``"temporal"`` -- the event is over when frame-to-frame motion stops.
+      Right when the scene STAYS changed afterwards (a jet fired into a gel
+      block leaves the gel deformed and dyed), because presence then never
+      returns and its trough no longer means "jet gone".
     """
+    if end_rule not in ("presence", "temporal"):
+        raise ValueError(
+            f"end_rule must be 'presence' or 'temporal', got {end_rule!r}"
+        )
     n = int(n)
     if n < 3:
         return None
@@ -362,6 +377,10 @@ def detect_bounds_with_presence(
         return last
 
     start = walk_left()
+
+    if end_rule == "temporal":
+        # The scene does not clear, so skip the presence machinery entirely.
+        return start, walk_right_temporal(), peak
 
     # Background from frames just before the onset.
     lo = max(0, start - pre)
@@ -434,11 +453,15 @@ def extract_injection(
     min_peak=300.0,
     copy=True,
     progress=None,
+    end_rule="presence",
 ):
     """Detect the injection in *source_dir* and copy the padded window out.
 
     Returns a result dict with the detection metadata and copied file list.
     Raises ``RuntimeError`` if no frames or no injection are found.
+
+    ``end_rule`` is passed to :func:`detect_bounds_with_presence`; use
+    ``"temporal"`` for a scene that stays changed after the event (gel).
     """
     source_dir = Path(source_dir)
     files = list_frames(source_dir)
@@ -454,6 +477,7 @@ def extract_injection(
         bounds = detect_bounds_with_presence(
             signal, getter, len(files),
             frac=frac, abs_floor=abs_floor, gap=gap, min_peak=min_peak,
+            end_rule=end_rule,
         )
     else:
         bounds = detect_injection_bounds(

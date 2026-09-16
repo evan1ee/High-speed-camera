@@ -189,12 +189,15 @@ class LayoutMixin:
         # Toggles to "Stop Piston" while the burst runs (_capture_piston).
         self.piston_button = ttk.Button(
             operation, text="Capture Piston", command=self._capture_piston)
+        # Toggles to "Stop Gel" while the burst runs (_capture_gel).
+        self.gel_button = ttk.Button(
+            operation, text="Capture Gel Injection", command=self._capture_gel)
         self.open_button = ttk.Button(
             operation, text="Open Last Folder", command=self._open_last_folder)
         grid_buttons(operation,
                      (self.preview_button, self.run_button,
                       self.monitor_button, self.piston_button,
-                      self.open_button), 4)
+                      self.gel_button, self.open_button), 4)
 
         log_frame = ttk.LabelFrame(root, text="Output", padding=8)
         log_frame.pack(fill=tk.X)

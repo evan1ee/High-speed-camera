@@ -47,7 +47,8 @@ distance/speed-vs-time record of the stroke.
   (Find Injection), `measurement.py` (Measure + Measure Angle Block), `video.py`
   (Make Video), `calibration.py` (Calibrate Scale / Auto Calibrate / Measure Block),
   `reference.py` (Set Reference), `piston.py` (Capture Piston / Find Injection Piston /
-  Measure Piston), `config.py` (shared folders + `log_to_file`),
+  Measure Piston), `gel.py` (Capture Gel Injection),
+  `config.py` (shared folders + `log_to_file`),
   `selftest.py` (headless `--selftest`). After a capture it chains:
   `CAPTURE_DONE → auto find-injection (in-memory) → auto measure → auto make slow-motion video`
   (a `Total time (find injection -> measurement finished)` line is logged when the chained
@@ -92,7 +93,17 @@ distance/speed-vs-time record of the stroke.
   Find Injection, Measure, Make Video, Find Injection Piston, Measure Piston),
   **Operation** (Stop Preview; Capture,
   toggling to "Stop Capture" while a burst runs — no separate Stop button; Start Monitoring;
-  Capture Piston, toggling to "Stop Piston"; Open Last Folder).
+  Capture Piston, toggling to "Stop Piston"; Capture Gel Injection, toggling to
+  "Stop Gel"; Open Last Folder).
+  The **gel chain** is `CAPTURE_DONE → find injection (end_rule="temporal") → make video`
+  (`gui/gel.py`, gated by `gel_chain`) — the spray capture path with Smart save forced off
+  and NO measure step. Two reasons, both about the gel block: the scene never clears, so the
+  default presence end rule has no trough meaning "jet gone" and runs far past the event
+  (Smart save plans its window with that same rule, which is why it is disabled rather than
+  merely unused); and there is no free jet inside a block to fit edge lines to, so a spray
+  angle would be meaningless. The run folder is prefixed `gel_` (`run_prefix`, honoured by
+  `capture_image.make_run_output_dir`) and the name rides into the injection-images folder
+  for free, because `make_dest_dir` names it after the source.
   The **piston chain** is `PISTON_CAPTURE_DONE → find injection piston → measure piston →
   make video` (`gui/piston.py`, gated by `piston_chain`). The video is built from the
   **measure** folder, not the injection folder, so it shows the fitted green line tracking the
@@ -130,6 +141,14 @@ distance/speed-vs-time record of the stroke.
   (disk) and `build_result` + `detect_bounds_with_presence` (used by the GUI's in-memory path).
   Motion-signal back-ends: `scan_with_cpp` → `compute_motion_signal_raw` → `compute_motion_signal`
   (PIL). Onset from temporal diff; end from a jet-presence signal (downsampled).
+  `detect_bounds_with_presence(..., end_rule=)` picks how the END is found: `"presence"`
+  (default — the jet is gone when presence settles back toward the pre-onset background;
+  right for a jet in air, which clears) or `"temporal"` (the event is over when
+  frame-to-frame motion stops; right when the scene STAYS changed afterwards, which is
+  the gel case — presence then never returns and its trough stops meaning "jet gone").
+  `extract_injection` passes it through. On a synthetic permanently-changed scene the
+  temporal rule lands on the last moving frame where presence overshoots it by 187
+  frames (`tests/test_gel_end_rule.py`).
 - **`hsc/smart_save.py`** — pure planning for the GUI's "Smart save" detect-before-write path
   (no SDK/Tk imports, unit-testable headless). `plan_window` wraps the unchanged
   `detect_bounds_with_presence` and returns `(bounds, (copy_start, copy_end))` using
@@ -348,6 +367,9 @@ All user output lives under `data\` (gitignored), via `data_root()`:
   is detected, the full burst still lands in `data\captures\` first as below. **Monitor mode**
   events also land directly here as `monitor_<stamp>_<WxH>\` (with `injection_meta.json`),
   one folder per detected injection — nothing in `data\captures\`.
+- `data\captures\gel_<timestamp>_<aspect>\…` — a **Capture Gel Injection** burst (whole
+  burst, Smart save off). Its injection window lands in `data\injection images\` and the
+  slow-motion video is written there; nothing goes to `data\measure\`.
 - `data\captures\piston_<timestamp>_<aspect>\…` — a **Capture Piston** burst (every frame
   kept, plus `piston_capture.json` with the per-frame camera timestamps). Its stroke window
   lands in `data\injection images\` like any other, with `piston_meta.json` alongside.
@@ -489,11 +511,11 @@ scikit-learn. Key, hard-won design decisions (do not regress these without reaso
 
 ## How to verify changes
 
-- Tests: `uv run python -m pytest` (175 tests: import smoke, GUI wiring/dispatch, monitor
+- Tests: `uv run python -m pytest` (216 tests: import smoke, GUI wiring/dispatch, monitor
   engine/replay/wiring, frame writer, BMP row order, smart save, synthetic wedge,
   edge-detection V2 (erf/pre-onset/quality/pooled/toggle), piston edge tracking / speed /
   GUI wiring (synthetic strokes with exact ground truth), calibration load, vendor layout,
-  data root). Compile check:
+  data root, gel end rule + gel chain wiring). Compile check:
   `uv run python -m py_compile hsc/*.py hsc/gui/*.py benchmark/*.py run_gui.py`.
 - Edge-detection accuracy: `uv run python -m benchmark.run_benchmark <tag>` writes
   `benchmark/results/<tag>.csv` (synthetic wedges with exact ground truth); compare against

@@ -279,14 +279,17 @@ class CaptureMixin:
         info = payload if isinstance(payload, dict) else {"dir": payload}
         self.last_output_dir = Path(info["dir"])
         self.run_button.configure(state=tk.NORMAL, text="Capture")
+        self._reset_gel_ui()
         # Auto-find the injection right after a saved capture, then measure
         # the spray angle, then make the slow-motion video.
         if self.capture_params and self.capture_params.no_save:
             self._pipeline_t0 = None       # no chain -> no total to report
         else:
-            self.auto_measure_pending = True
+            # A gel run ends at the video: there is no free jet inside a
+            # gel block to fit edge lines to, so measure is skipped.
+            self.auto_measure_pending = not self.gel_chain
             # Timer: find-injection start -> measurement finished.
-            self._pipeline_t0 = time.perf_counter()
+            self._pipeline_t0 = None if self.gel_chain else time.perf_counter()
             if info.get("extract_result") is not None:
                 # Smart save already wrote the injection window;
                 # skip straight to the video+measure chain.
@@ -299,6 +302,10 @@ class CaptureMixin:
                 self._auto_extract_from_signal(
                     info["files"], info["signal"]
                 )
+            elif self.gel_chain:
+                # The scene stays changed after a gel injection, so the end
+                # must come from motion stopping, not presence settling.
+                self._find_injection(info["dir"], end_rule="temporal")
             else:
                 self._find_injection(info["dir"])
 
@@ -306,6 +313,8 @@ class CaptureMixin:
         self.status_var.set(f"Error: {payload}")
         self._append_log(f"[Capture Error] {payload}\n")
         self.run_button.configure(state=tk.NORMAL, text="Capture")
+        self._reset_gel_ui()
+        self.gel_chain = False
         self._pipeline_t0 = None
 
     # ------------------------------------------------------------------
@@ -346,6 +355,7 @@ class CaptureMixin:
                     # camera; return their toggles to idle (both idempotent).
                     self._reset_monitor_ui()
                     self._reset_piston_ui()
+                    self._reset_gel_ui()
                     # An ROI change stops the camera so the new size can be
                     # programmed; bring the preview straight back up.
                     if self._restart_preview_pending:
