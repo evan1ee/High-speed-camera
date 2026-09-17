@@ -43,6 +43,27 @@ Captures, `injection images`, and `measure` output are written **next to the
 where it is), so keep it in a folder the user can write to (not
 `C:\Program Files`).
 
+## Carrying the calibration and reference across
+
+The build does **not** bundle `settings\` -- those files are written at runtime,
+so baking one rig's calibration into every build would be wrong. Copy them in
+after building, next to the .exe:
+
+```
+xcopy /I /Y settings dist\HighSpeedCamera\settings
+```
+
+The frozen app resolves `settings_path()` to `<exe folder>\settings`, so
+`calibration.json` and `reference_lines.json` are picked up from there. Skip
+this and the app still runs, but **measurements come out in pixels only** (never
+a silently wrong mm) and the spray angle falls back to edge-to-edge instead of
+deviation from the nozzle axis.
+
+`mm_per_px` is a property of the **optics**, not the PC: carrying it over is
+correct only if the target rig has the same camera, lens and working distance.
+A different optical setup must be recalibrated on that rig. The `.bak` files do
+not need to travel -- the app rewrites them on the next save.
+
 ## What the target PC needs
 
 - **Nothing for measurement / video** — the packaged app is self-contained.
