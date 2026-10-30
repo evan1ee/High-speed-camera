@@ -1,0 +1,139 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?ifndef ProductVersion?>
+    <?define ProductVersion = "1.0.0.0" ?>
+  <?endif?>
+
+  <Package Name="High Speed Camera"
+           Manufacturer="High Speed Camera Rig System"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="648B1C63-024F-4C21-BD33-EE3E92B9229A"
+           Language="1033"
+           Codepage="1252"
+           Scope="perMachine">
+
+    <SummaryInformation Description="High Speed Camera Rig Measurement Toolkit Installer"
+                        Manufacturer="High Speed Camera Rig System" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of High Speed Camera is already installed."
+                  AllowSameVersionUpgrades="yes" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Application Icon for ARP and Shortcuts -->
+    <Icon Id="AppIcon.ico" SourceFile="app_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPHELPLINK" Value="https://github.com" />
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+
+    <!-- Driver installation toggle property: default 1 (enabled) -->
+    <Property Id="INSTALL_CAMERA_DRIVER" Value="1" Secure="yes" />
+
+    <!-- Directory Structure: rooted in ProgramFiles64Folder for WiX auto-GUIDs, defaulted to C:\HighSpeedCamera via SetProperty -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="HighSpeedCamera">
+        <Directory Id="DriversFolder" Name="drivers" />
+        <Directory Id="DataFolder" Name="data" />
+        <Directory Id="SettingsFolder" Name="settings" />
+      </Directory>
+    </StandardDirectory>
+
+    <SetProperty Id="INSTALLFOLDER" Value="[WindowsVolume]HighSpeedCamera" Before="CostFinalize" Condition="NOT WIX_UPGRADE_DETECTED AND NOT INSTALLFOLDER" />
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="High Speed Camera" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <!-- Directory write permissions for test rig operators -->
+    <Component Id="InstallFolderPerms" Directory="INSTALLFOLDER" Guid="3F8A6B12-9A45-48CD-B76F-1B32DE3C1841">
+      <CreateFolder>
+        <util:PermissionEx User="Users" GenericAll="yes" />
+      </CreateFolder>
+    </Component>
+
+    <Component Id="DataFolderPerms" Directory="DataFolder" Guid="5B9C8E21-7A64-46CE-9C81-2D45FE6A2952">
+      <CreateFolder>
+        <util:PermissionEx User="Users" GenericAll="yes" />
+      </CreateFolder>
+    </Component>
+
+    <Component Id="SettingsFolderPerms" Directory="SettingsFolder" Guid="7D1E9F43-8C75-48DF-AD92-3E56BA7B3063">
+      <CreateFolder>
+        <util:PermissionEx User="Users" GenericAll="yes" />
+      </CreateFolder>
+    </Component>
+
+    <!-- Harvested application payload from staging directory -->
+    <ComponentGroup Id="StagedAppPayload" Directory="INSTALLFOLDER">
+      <Files Include="staging\**" />
+    </ComponentGroup>
+
+    <!-- Start Menu & Desktop Shortcuts -->
+    <Component Id="ApplicationShortcuts" Directory="ApplicationProgramsFolder" Guid="8E2A7B54-6C86-49EF-BE03-4F67CB8C4174">
+      <Shortcut Id="AppStartMenuShortcut"
+                Name="High Speed Camera"
+                Description="High Speed Camera Spray Angle &amp; Piston Measurement Toolkit"
+                Target="[INSTALLFOLDER]capture_gui_qt.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon.ico" />
+
+      <Shortcut Id="DriverStartMenuShortcut"
+                Name="Install Camera USB Driver"
+                Description="Install or Repair USB3 Vision Camera Driver"
+                Target="[INSTALLFOLDER]drivers\instUSBDriver.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+
+      <Shortcut Id="UninstallProductShortcut"
+                Name="Uninstall High Speed Camera"
+                Description="Uninstalls High Speed Camera and its components"
+                Target="[System64Folder]msiexec.exe"
+                Arguments="/x [ProductCode]" />
+
+      <RemoveFolder Id="CleanUpAppProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\HighSpeedCamera" Name="shortcuts" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="9F3B8C65-7D97-4AF0-CF14-5A78DC9D5285">
+      <Shortcut Id="AppDesktopShortcut"
+                Name="High Speed Camera"
+                Description="High Speed Camera Spray Angle &amp; Piston Measurement Toolkit"
+                Target="[INSTALLFOLDER]capture_gui_qt.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon.ico" />
+      <RegistryValue Root="HKCU" Key="Software\HighSpeedCamera" Name="desktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- Deferred Elevated Custom Action: Runs instUSBDriver.exe silently without UAC prompt -->
+    <CustomAction Id="InstallCameraDriverAction"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[INSTALLFOLDER]drivers\instUSBDriver.exe&quot; /S"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallCameraDriverAction"
+              Before="InstallFinalize"
+              Condition="INSTALL_CAMERA_DRIVER = 1 AND NOT Installed" />
+    </InstallExecuteSequence>
+
+    <!-- Standard WiX UI with Directory Selection -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+    <!-- Main Feature Definition -->
+    <Feature Id="Complete" Title="High Speed Camera" Description="Full installation including UI, algorithms, SDK runtimes, and drivers." Level="1">
+      <ComponentGroupRef Id="StagedAppPayload" />
+      <ComponentRef Id="InstallFolderPerms" />
+      <ComponentRef Id="DataFolderPerms" />
+      <ComponentRef Id="SettingsFolderPerms" />
+      <ComponentRef Id="ApplicationShortcuts" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+  </Package>
+</Wix>

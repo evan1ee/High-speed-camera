@@ -1,21 +1,49 @@
-# PyInstaller build output (large, regenerable)
+# Build & distribution artifacts
 build/
-dist/
+bin/
+obj/
+*.obj
+*.pdb
+*.ilk
+*.exp
+C version/build/
+C version/gui/build/
+C version/gui/dist/
+installer/staging/
+installer/dist/
+installer/cab1.cab
+*.msi
+*.wixpdb
+*.cab
 
-# Python caches
+# Large downloads & installers
+MVviewer_*.exe
+*.7z
+*.zip
+sdk-archive/
+
+# Visual Studio & IDE files
+.vs/
+*.sln.docstates
+*.suo
+*.user
+CMakeSettings.json
+.vscode/
+
+# Local data & test output
+data/
+*.log
+*.tmp
+test_*.bmp
+test_custom_data_dir/
+test_custom_settings_dir/
+test_screen_calib_dialog.png
+redesigned_gui_*.png
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
-
-# uv-managed virtual environment (recreate with `uv sync`)
+.coverage
 .venv/
-
-# Runtime data: captures, injection images, measure output. Machine-specific,
-# often gigabytes - never committed.
-data/
-
-# Rig settings: calibration and nozzle-reference JSON. Machine-specific.
-settings/
-
-# Benchmark run outputs (regenerable; baseline.csv IS committed)
-benchmark/results/

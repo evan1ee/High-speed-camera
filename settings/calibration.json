@@ -1,0 +1,33 @@
+{
+    "created_at": "2026-10-30 18:17:00",
+    "distance_px": 95.527,
+    "edge1": {
+        "b": 0,
+        "horizontal": true,
+        "k": 0,
+        "roi": [
+            0,
+            0,
+            -1,
+            -1
+        ]
+    },
+    "edge2": {
+        "b": 0,
+        "horizontal": true,
+        "k": 0,
+        "roi": [
+            0,
+            0,
+            -1,
+            -1
+        ]
+    },
+    "image_size": [
+        320,
+        240
+    ],
+    "mm_per_px": 0.052341,
+    "mode": "step",
+    "ref_mm": 5
+}

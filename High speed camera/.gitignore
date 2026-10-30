@@ -1,0 +1,21 @@
+# PyInstaller build output (large, regenerable)
+build/
+dist/
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# uv-managed virtual environment (recreate with `uv sync`)
+.venv/
+
+# Runtime data: captures, injection images, measure output. Machine-specific,
+# often gigabytes - never committed.
+data/
+
+# Rig settings: calibration and nozzle-reference JSON. Machine-specific.
+settings/
+
+# Benchmark run outputs (regenerable; baseline.csv IS committed)
+benchmark/results/
