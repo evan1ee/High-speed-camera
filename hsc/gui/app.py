@@ -63,6 +63,20 @@ class CaptureGui(
         except tk.TclError:
             self.attributes("-zoomed", True)
 
+        # Window icon
+        import os
+        for icon_candidate in [
+            os.path.join(os.path.dirname(__file__), "..", "..", "app_icon.ico"),
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "app_icon.ico"),
+            "app_icon.ico",
+        ]:
+            if os.path.exists(icon_candidate):
+                try:
+                    self.iconbitmap(default=icon_candidate)
+                    break
+                except Exception:
+                    pass
+
         self.output_queue = queue.Queue()
         self.preview_queue = queue.Queue()
         self.last_output_dir = None

@@ -66,7 +66,7 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
-    icon=None,
+    icon=os.path.join(ROOT, "app_icon.ico"),
 )
 
 coll = COLLECT(
